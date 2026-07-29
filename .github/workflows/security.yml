@@ -11,9 +11,9 @@ permissions:
 
 jobs:
   compatibility:
-    uses: Daniel-Astrofer/.github/.github/workflows/compatibility-ci.yml@13ca0b7eb3992aab286019e398f1fc7dbaee8f8a
+    uses: Daniel-Astrofer/.github/.github/workflows/compatibility-ci.yml@2552ff2125c2d72accebe93804b8e139a52ded13
     with:
       component: node
 
   security:
-    uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@13ca0b7eb3992aab286019e398f1fc7dbaee8f8a
+    uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@2552ff2125c2d72accebe93804b8e139a52ded13
