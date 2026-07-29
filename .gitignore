@@ -1,0 +1,6 @@
+/target/
+*.log
+.idea/
+.env
+.env.*
+.smart_build_state.json
