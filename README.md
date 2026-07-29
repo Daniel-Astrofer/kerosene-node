@@ -15,5 +15,5 @@ The implementation has not yet landed on `Kerosene/main`. This repository is
 created as the independent release boundary and intentionally contains no fake
 consensus implementation.
 
-See [issue #30](https://github.com/Daniel-Astrofer/Kerosene/issues/30) for the
+See [issue #2](https://github.com/Daniel-Astrofer/kerosene-node/issues/2) for the
 implementation roadmap.
