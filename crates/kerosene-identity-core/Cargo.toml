@@ -1,0 +1,21 @@
+[package]
+name = "kerosene-identity-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+production = ["kerosene-contracts/production"]
+
+[dependencies]
+ed25519-dalek.workspace = true
+hex.workspace = true
+kerosene-contracts.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

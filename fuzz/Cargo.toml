@@ -1,0 +1,27 @@
+[package]
+name = "kerosene-node-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/kerosene-contracts.git", rev = "24f98fb079f1b61af782b02f4134b383e1c89238" }
+
+[[bin]]
+name = "peer_hello"
+path = "fuzz_targets/peer_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admission_request"
+path = "fuzz_targets/admission_request.rs"
+test = false
+doc = false
+bench = false
