@@ -4,6 +4,7 @@ use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
@@ -54,7 +55,7 @@ impl Config {
             .unwrap_or_else(|_| "127.0.0.1:8800".into())
             .parse()
             .context("KEROSENE_NODE_LISTEN_ADDR is invalid")?;
-        let onion_endpoint = required("KEROSENE_NODE_ONION_ENDPOINT")?;
+        let onion_endpoint = onion_endpoint()?;
         validate_onion_endpoint(&onion_endpoint)?;
         let socks_proxy = required("KEROSENE_TOR_SOCKS_PROXY")?;
         if !socks_proxy.starts_with("socks5h://") {
@@ -309,6 +310,47 @@ fn integer(name: &str, default: u64) -> anyhow::Result<u64> {
 
 fn env_flag(name: &str) -> bool {
     env::var(name).is_ok_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+}
+
+fn onion_endpoint() -> anyhow::Result<String> {
+    if let Ok(endpoint) = required("KEROSENE_NODE_ONION_ENDPOINT") {
+        return Ok(endpoint);
+    }
+    let hostname_path = PathBuf::from(required("KEROSENE_NODE_ONION_HOSTNAME_PATH")?);
+    let port = integer("KEROSENE_NODE_ONION_PORT", 8800)?;
+    if port == 0 || port > u64::from(u16::MAX) {
+        return Err(anyhow!("KEROSENE_NODE_ONION_PORT is invalid"));
+    }
+    let timeout_ms = integer("KEROSENE_NODE_ONION_WAIT_TIMEOUT_MS", 120_000)?;
+    let started = std::time::Instant::now();
+    loop {
+        match fs::read_to_string(&hostname_path) {
+            Ok(hostname) if !hostname.trim().is_empty() => {
+                let hostname = hostname.trim();
+                let endpoint = format!("https://{hostname}:{port}");
+                validate_onion_endpoint(&endpoint)?;
+                return Ok(endpoint);
+            }
+            Ok(_) | Err(_) if started.elapsed() < Duration::from_millis(timeout_ms) => {
+                thread::sleep(Duration::from_millis(250));
+            }
+            Ok(_) => {
+                return Err(anyhow!(
+                    "onion hostname file remained empty: {}",
+                    hostname_path.display()
+                ));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "read onion hostname after waiting {} ms: {}",
+                        timeout_ms,
+                        hostname_path.display()
+                    )
+                });
+            }
+        }
+    }
 }
 
 fn endpoints_from_env(
