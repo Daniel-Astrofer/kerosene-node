@@ -1,0 +1,31 @@
+[package]
+name = "kerosene-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+production = [
+  "kerosene-contracts/production",
+  "kerosene-identity-core/production",
+  "kerosene-membership/production",
+]
+
+[dependencies]
+async-trait.workspace = true
+hex.workspace = true
+kerosene-contracts.workspace = true
+kerosene-identity-core = { path = "../kerosene-identity-core" }
+kerosene-membership = { path = "../kerosene-membership" }
+parking_lot.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

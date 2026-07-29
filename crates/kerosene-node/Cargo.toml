@@ -1,0 +1,42 @@
+[package]
+name = "kerosene-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+production = [
+  "kerosene-contracts/production",
+  "kerosene-discovery/production",
+  "kerosene-identity-core/production",
+  "kerosene-membership/production",
+  "kerosene-sync/production",
+]
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+hex.workspace = true
+kerosene-contracts.workspace = true
+kerosene-discovery = { path = "../kerosene-discovery" }
+kerosene-identity-core = { path = "../kerosene-identity-core" }
+kerosene-membership = { path = "../kerosene-membership" }
+kerosene-sync = { path = "../kerosene-sync" }
+parking_lot.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+sha2.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,29 @@
+name: Protocol fuzzing
+
+on:
+  pull_request:
+    paths:
+      - "fuzz/**"
+      - "crates/kerosene-discovery/**"
+      - "crates/kerosene-membership/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-fuzz-targets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install fuzz toolchain
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --locked
+      - name: Compile PeerHello and AdmissionRequest fuzzers
+        working-directory: fuzz
+        run: cargo +nightly fuzz build

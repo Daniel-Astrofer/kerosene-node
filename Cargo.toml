@@ -1,0 +1,41 @@
+[workspace]
+members = [
+  "crates/kerosene-identity-core",
+  "crates/kerosene-membership",
+  "crates/kerosene-discovery",
+  "crates/kerosene-sync",
+  "crates/kerosene-node",
+]
+exclude = ["fuzz"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/kerosene-contracts.git", rev = "24f98fb079f1b61af782b02f4134b383e1c89238" }
+parking_lot = "0.12"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+zeroize = "1"

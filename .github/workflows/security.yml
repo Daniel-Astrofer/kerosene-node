@@ -15,5 +15,32 @@ jobs:
     with:
       component: node
 
+  rust:
+    uses: Daniel-Astrofer/.github/.github/workflows/rust-ci.yml@2552ff2125c2d72accebe93804b8e139a52ded13
+    with:
+      enforce-format: true
+
+  tests:
+    name: Discovery and membership tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88 --profile minimal
+      - name: Run workspace tests
+        run: cargo +1.88 test --workspace --all-features --locked
+
+  membership-coverage:
+    name: Membership coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install coverage toolchain
+        run: |
+          rustup toolchain install 1.88 --profile minimal --component llvm-tools-preview
+          cargo +1.88 install cargo-llvm-cov --locked
+      - name: Enforce membership coverage
+        run: cargo +1.88 llvm-cov --package kerosene-membership --fail-under-lines 80
+
   security:
     uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@2552ff2125c2d72accebe93804b8e139a52ded13
