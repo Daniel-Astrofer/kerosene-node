@@ -10,4 +10,4 @@ permissions:
 
 jobs:
   security:
-    uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@7b1da98fbf1159e80b7ea3d055a137d749226d2f
+    uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@3cfcdc140bb715528505383a6987ab2200556d37
