@@ -6,7 +6,7 @@
 | --- | --- |
 | `KEROSENE_NETWORK_ID` | Exact network identifier bound into identities |
 | `KEROSENE_DISCOVERY_PLANE` | `bank` or `vault` |
-| `KEROSENE_NODE_ONION_ENDPOINT` | Published `https://<56-char-v3>.onion` URL |
+| `KEROSENE_NODE_ONION_ENDPOINT` | Published `https://<56-char-v3>.onion` URL, or use the hostname-file variables below |
 | `KEROSENE_GENESIS_TRUST_BUNDLE` | Path to `GenesisTrustBundleV1` JSON |
 | `KEROSENE_TLS_CERT_PATH` | Server certificate with the onion hostname SAN |
 | `KEROSENE_TLS_KEY_PATH` | Server TLS private key |
@@ -18,6 +18,9 @@ Optional configuration:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `KEROSENE_NODE_LISTEN_ADDR` | `127.0.0.1:8800` | Protected local bind for the onion service |
+| `KEROSENE_NODE_ONION_HOSTNAME_PATH` | none | Tor-generated hostname file; used only when the explicit endpoint is absent |
+| `KEROSENE_NODE_ONION_PORT` | `8800` | Published onion port when reading the hostname file |
+| `KEROSENE_NODE_ONION_WAIT_TIMEOUT_MS` | `120000` | Maximum wait for Tor to create the hostname |
 | `KEROSENE_IDENTITY_KEY_PATH` | `peer-store/identity.key` | Persistent root identity |
 | `KEROSENE_PEER_STORE` | `peer-store` | Persistent discovery state |
 | `KEROSENE_TLS_CLIENT_IDENTITY_PEM` | none | PEM containing outbound mTLS certificate and key |
@@ -31,6 +34,23 @@ Optional configuration:
 `KEROSENE_DISCOVERY_SEEDS` is accepted temporarily as a compatibility alias for
 `KEROSENE_GENESIS_ENDPOINTS`. New deployments should use the new name.
 `KEROSENE_CLEARNET_PUBLISH=true` is always rejected.
+
+## Provision the member identity
+
+Create each member identity before building its `GenesisTrustBundleV1`. The
+command writes the private identity with mode `0600` and prints only public
+metadata:
+
+```sh
+cargo run --locked -p kerosene-node --bin kerosene-node-keygen -- \
+  kerosene-staging /secure/member/identity.key
+```
+
+Put the printed `member_id` and `root_public_key` in the trust bundle, then
+provision the same `identity.key` and member ID to the runtime secret. Do not
+generate a new identity during a deployment: it would not match the signed
+trust bundle. The identity is network-bound and may be used by either discovery
+plane, but a process still has exactly one configured plane.
 
 ## First Core
 
