@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "kerosene_node=info".into()),
         )
         .init();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let config = Config::from_env()?;
     let bundle: GenesisTrustBundleV1 = serde_json::from_slice(
         &fs::read(&config.genesis_bundle).context("read GenesisTrustBundle")?,
