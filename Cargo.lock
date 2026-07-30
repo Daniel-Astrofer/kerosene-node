@@ -941,8 +941,6 @@ dependencies = [
  "hex",
  "kerosene-contracts",
  "kerosene-identity-core",
- "serde",
- "serde_json",
  "thiserror",
  "url",
 ]
@@ -967,9 +965,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror",
  "tokio",
- "tower",
  "tracing",
  "tracing-subscriber",
 ]
@@ -991,7 +987,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
- "tracing",
  "tracing-subscriber",
 ]
 
