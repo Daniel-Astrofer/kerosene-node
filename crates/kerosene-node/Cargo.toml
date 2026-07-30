@@ -27,7 +27,6 @@ kerosene-membership = { path = "../kerosene-membership" }
 kerosene-sync = { path = "../kerosene-sync" }
 parking_lot.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
