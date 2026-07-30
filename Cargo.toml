@@ -6,6 +6,7 @@ members = [
   "crates/kerosene-sync",
   "crates/kerosene-node",
   "crates/kerosene-rsctl",
+  "crates/kerosene-ledger",
 ]
 exclude = ["fuzz"]
 resolver = "2"
