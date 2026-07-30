@@ -21,7 +21,7 @@ jobs:
       enforce-format: true
 
   rsctl:
-    uses: Daniel-Astrofer/.github/.github/workflows/admin-cli-ci.yml@829c04ccb3ba3d171695e848fadadca6a13bf20e
+    uses: Daniel-Astrofer/.github/.github/workflows/admin-cli-ci.yml@e43f6ff7f0b1605cb98718c1452884a1ea61fa9b
     with:
       language: rust
       package: kerosene-rsctl
