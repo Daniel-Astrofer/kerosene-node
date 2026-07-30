@@ -25,3 +25,10 @@ path = "fuzz_targets/admission_request.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "membership_manifest"
+path = "fuzz_targets/membership_manifest.rs"
+test = false
+doc = false
+bench = false

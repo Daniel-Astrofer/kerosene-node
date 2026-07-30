@@ -1,25 +1,28 @@
 [package]
-name = "kerosene-rsctl"
+name = "kerosene-cometbft-adapter"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-anyhow.workspace = true
-clap.workspace = true
+bytes = "1"
 ed25519-dalek.workspace = true
 hex.workspace = true
-kerosene-contracts.workspace = true
-kerosene-membership = { path = "../kerosene-membership" }
-kerosene-rsctl-client = { path = "../kerosene-rsctl-client" }
-reqwest.workspace = true
+kerosene-identity-core = { path = "../kerosene-identity-core" }
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tendermint.workspace = true
+tendermint-proto.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tokio-stream = "0.1"
+tower.workspace = true
+tower-abci.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [dev-dependencies]
+rand.workspace = true
 tempfile.workspace = true
