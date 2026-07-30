@@ -64,6 +64,14 @@ compatibility and artifact diagnostics. It also supports an offline
 create/sign/verify/publish membership ceremony. Private identity files must be
 mode `0600`; secrets are never accepted as inline command arguments.
 
+Profiles are loaded from `~/.config/kerosene/profiles.toml`, or from the path in
+`KEROSENE_PROFILES_FILE`. They contain endpoints and credential file references,
+never tokens or private key contents. A local Vault Admin API can be reached
+through `--unix-socket /run/kerosene/vault-admin.sock`; Unix socket mode cannot
+be combined with mTLS or proxy flags. Network administration requires an
+operator PEM with private file permissions, its CA and `socks5h://` for Onion
+endpoints.
+
 ```bash
 cargo run -p kerosene-rsctl -- node status \
   --endpoint https://example.onion:8800 --output json-pretty
