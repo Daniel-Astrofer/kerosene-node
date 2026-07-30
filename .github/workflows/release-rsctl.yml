@@ -1,0 +1,18 @@
+name: Release kerosene-rsctl
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    uses: Daniel-Astrofer/.github/.github/workflows/rust-release.yml@c20b6773eaf68590ac128403c6959e0c758af1e4
+    with:
+      package: kerosene-rsctl
+      features: production
+      forbidden-features: dealer_lab

@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +16,7 @@ use kerosene_identity_core::NodeIdentity;
 use kerosene_membership::MembershipVerifier;
 use kerosene_node::{now_epoch_ms, NodeService};
 use kerosene_sync::LifecycleStore;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
@@ -263,17 +263,15 @@ fn tls_config(
     key_path: &PathBuf,
     client_ca_path: &PathBuf,
 ) -> anyhow::Result<axum_server::tls_rustls::RustlsConfig> {
-    let mut cert_reader = BufReader::new(fs::File::open(cert_path).context("open TLS cert")?);
-    let certificates = rustls_pemfile::certs(&mut cert_reader)
-        .collect::<Result<Vec<CertificateDer<'static>>, _>>()
+    let cert_pem = fs::read(cert_path).context("read TLS cert")?;
+    let certificates = CertificateDer::pem_slice_iter(&cert_pem)
+        .collect::<Result<Vec<_>, _>>()
         .context("parse TLS cert")?;
-    let mut key_reader = BufReader::new(fs::File::open(key_path).context("open TLS key")?);
-    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
-        .context("parse TLS key")?
-        .ok_or_else(|| anyhow!("TLS key file contains no private key"))?;
-    let mut ca_reader = BufReader::new(fs::File::open(client_ca_path).context("open client CA")?);
+    let key_pem = fs::read(key_path).context("read TLS key")?;
+    let key = PrivateKeyDer::from_pem_slice(&key_pem).context("parse TLS key")?;
+    let ca_pem = fs::read(client_ca_path).context("read client CA")?;
     let mut roots = RootCertStore::empty();
-    for certificate in rustls_pemfile::certs(&mut ca_reader) {
+    for certificate in CertificateDer::pem_slice_iter(&ca_pem) {
         roots.add(certificate.context("parse client CA")?)?;
     }
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots))

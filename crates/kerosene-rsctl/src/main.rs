@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,7 +12,7 @@ use kerosene_contracts::{
     DISCOVERY_CONTRACT_VERSION,
 };
 use kerosene_membership::MembershipVerifier;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -36,6 +37,8 @@ struct Cli {
     ca: Option<PathBuf>,
     #[arg(long, global = true)]
     socks5h: Option<String>,
+    #[arg(long, global = true)]
+    unix_socket: Option<PathBuf>,
     #[arg(long, global = true)]
     request_id: Option<String>,
     #[arg(long, global = true)]
@@ -211,6 +214,22 @@ enum Plane {
     Vault,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ProfilesFile {
+    #[serde(default)]
+    profiles: BTreeMap<String, Profile>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct Profile {
+    node_endpoint: Option<String>,
+    vault_endpoint: Option<String>,
+    identity_file: Option<PathBuf>,
+    ca_file: Option<PathBuf>,
+    socks5h: Option<String>,
+    vault_socket: Option<PathBuf>,
+}
+
 impl From<Plane> for DiscoveryPlane {
     fn from(value: Plane) -> Self {
         match value {
@@ -227,20 +246,42 @@ async fn main() -> Result<()> {
         .with_env_filter(if cli.verbose { "debug" } else { "warn" })
         .with_writer(std::io::stderr)
         .init();
-    if cli.profile.is_some() {
-        bail!("--profile is reserved until the profiles.toml parser is released; pass endpoints and credential paths explicitly");
-    }
+    let profile = load_profile(cli.profile.as_deref())?;
+    let identity_pem = cli.identity_pem.as_deref().or_else(|| {
+        profile
+            .as_ref()
+            .and_then(|value| value.identity_file.as_deref())
+    });
+    let ca = cli
+        .ca
+        .as_deref()
+        .or_else(|| profile.as_ref().and_then(|value| value.ca_file.as_deref()));
+    let socks5h = cli
+        .socks5h
+        .as_deref()
+        .or_else(|| profile.as_ref().and_then(|value| value.socks5h.as_deref()));
+    let unix_socket = cli.unix_socket.as_deref().or_else(|| {
+        profile
+            .as_ref()
+            .and_then(|value| value.vault_socket.as_deref())
+    });
     let request_id = request_id(cli.request_id.clone());
-    let client = admin_client(
-        cli.timeout,
-        cli.identity_pem.as_deref(),
-        cli.ca.as_deref(),
-        cli.socks5h.as_deref(),
-    )?;
+    let network_client = admin_client(cli.timeout, identity_pem, ca, socks5h, None)?;
+    let vault_client = if let Some(socket) = unix_socket {
+        admin_client(cli.timeout, None, None, None, Some(socket))?
+    } else {
+        network_client.clone()
+    };
 
     let value = match cli.command {
         Command::Node { command } => {
-            let endpoint = endpoint(cli.endpoint.as_deref(), "KEROSENE_NODE_ENDPOINT")?;
+            let node_endpoint = endpoint(
+                cli.endpoint.as_deref(),
+                "KEROSENE_NODE_ENDPOINT",
+                profile
+                    .as_ref()
+                    .and_then(|value| value.node_endpoint.as_deref()),
+            )?;
             match command {
                 NodeCommand::Status
                 | NodeCommand::Membership {
@@ -251,32 +292,54 @@ async fn main() -> Result<()> {
                     } else {
                         "/v1/membership/current"
                     };
-                    get_json(&client, &endpoint, path, &request_id).await?
+                    get_json(&network_client, &node_endpoint, path, &request_id).await?
                 }
                 NodeCommand::Peers => {
-                    get_json(&client, &endpoint, "/v1/discovery/peers", &request_id).await?
+                    get_json(
+                        &network_client,
+                        &node_endpoint,
+                        "/v1/discovery/peers",
+                        &request_id,
+                    )
+                    .await?
                 }
             }
         }
         Command::Vault { command } => {
-            let endpoint = endpoint(cli.endpoint.as_deref(), "KEROSENE_VAULT_ENDPOINT")?;
+            let endpoint = if unix_socket.is_some() {
+                "http://localhost".to_string()
+            } else {
+                endpoint(
+                    cli.endpoint.as_deref(),
+                    "KEROSENE_VAULT_ENDPOINT",
+                    profile
+                        .as_ref()
+                        .and_then(|value| value.vault_endpoint.as_deref()),
+                )?
+            };
             match command {
                 VaultCommand::Status => {
-                    get_json(&client, &endpoint, "/v1/admin/status", &request_id).await?
+                    get_json(&vault_client, &endpoint, "/v1/admin/status", &request_id).await?
                 }
                 VaultCommand::Health => {
-                    get_json(&client, &endpoint, "/v1/health", &request_id).await?
+                    get_json(&vault_client, &endpoint, "/v1/health", &request_id).await?
                 }
                 VaultCommand::Ceremony {
                     command: CeremonyCommand::Inspect,
-                } => get_json(&client, &endpoint, "/v1/admin/ceremony", &request_id).await?,
+                } => get_json(&vault_client, &endpoint, "/v1/admin/ceremony", &request_id).await?,
             }
         }
         Command::Quorum {
             command: QuorumCommand::Status,
         } => {
-            let endpoint = endpoint(cli.endpoint.as_deref(), "KEROSENE_NODE_ENDPOINT")?;
-            get_json(&client, &endpoint, "/v1/readiness", &request_id).await?
+            let endpoint = endpoint(
+                cli.endpoint.as_deref(),
+                "KEROSENE_NODE_ENDPOINT",
+                profile
+                    .as_ref()
+                    .and_then(|value| value.node_endpoint.as_deref()),
+            )?;
+            get_json(&network_client, &endpoint, "/v1/readiness", &request_id).await?
         }
         Command::Compatibility {
             command: CompatibilityCommand::Check,
@@ -290,10 +353,51 @@ async fn main() -> Result<()> {
         } => artifact_verify(&path, sha256.as_deref())?,
         Command::Membership { command } => membership(command).await?,
         Command::Doctor => {
-            let endpoint = endpoint(cli.endpoint.as_deref(), "KEROSENE_NODE_ENDPOINT")?;
-            let live = get_json(&client, &endpoint, "/live", &request_id).await?;
-            let readiness = get_json(&client, &endpoint, "/v1/readiness", &request_id).await?;
-            json!({"healthy": true, "live": live, "readiness": readiness})
+            let node_endpoint = endpoint(
+                cli.endpoint.as_deref(),
+                "KEROSENE_NODE_ENDPOINT",
+                profile
+                    .as_ref()
+                    .and_then(|value| value.node_endpoint.as_deref()),
+            )?;
+            let live = get_json(&network_client, &node_endpoint, "/live", &request_id).await?;
+            let readiness = get_json(
+                &network_client,
+                &node_endpoint,
+                "/v1/readiness",
+                &request_id,
+            )
+            .await?;
+            let vault = if unix_socket.is_some()
+                || profile
+                    .as_ref()
+                    .and_then(|value| value.vault_endpoint.as_ref())
+                    .is_some()
+            {
+                let vault_endpoint = if unix_socket.is_some() {
+                    "http://localhost".to_string()
+                } else {
+                    endpoint(
+                        None,
+                        "KEROSENE_VAULT_ENDPOINT",
+                        profile
+                            .as_ref()
+                            .and_then(|value| value.vault_endpoint.as_deref()),
+                    )?
+                };
+                Some(
+                    get_json(
+                        &vault_client,
+                        &vault_endpoint,
+                        "/v1/admin/status",
+                        &request_id,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            json!({"healthy": true, "live": live, "readiness": readiness, "vault": vault})
         }
     };
     print_value(cli.output, &value)
@@ -424,12 +528,17 @@ fn admin_client(
     identity_pem: Option<&Path>,
     ca: Option<&Path>,
     socks5h: Option<&str>,
+    unix_socket: Option<&Path>,
 ) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(timeout));
+    if unix_socket.is_some() && (identity_pem.is_some() || ca.is_some() || socks5h.is_some()) {
+        bail!("Unix socket cannot be combined with mTLS or proxy options");
+    }
     if identity_pem.is_some() != ca.is_some() {
         bail!("--identity-pem and --ca must be provided together");
     }
     if let (Some(identity_pem), Some(ca)) = (identity_pem, ca) {
+        ensure_private_file(identity_pem)?;
         builder = builder
             .https_only(true)
             .identity(reqwest::Identity::from_pem(&fs::read(identity_pem)?)?)
@@ -440,6 +549,9 @@ fn admin_client(
             bail!("proxy must use socks5h:// so DNS is resolved through Tor");
         }
         builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+    }
+    if let Some(socket) = unix_socket {
+        builder = builder.unix_socket(socket);
     }
     Ok(builder.build()?)
 }
@@ -460,11 +572,58 @@ async fn get_json(
         .await?)
 }
 
-fn endpoint(cli: Option<&str>, env_name: &str) -> Result<String> {
+fn endpoint(cli: Option<&str>, env_name: &str, profile: Option<&str>) -> Result<String> {
     cli.map(str::to_owned)
         .or_else(|| std::env::var(env_name).ok())
+        .or_else(|| profile.map(str::to_owned))
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("--endpoint or {env_name} is required"))
+        .ok_or_else(|| anyhow!("--endpoint, {env_name}, or a profile endpoint is required"))
+}
+
+fn load_profile(name: Option<&str>) -> Result<Option<Profile>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_'))
+    {
+        bail!("profile name contains unsupported characters");
+    }
+    let path = std::env::var_os("KEROSENE_PROFILES_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".config/kerosene/profiles.toml"))
+        })
+        .ok_or_else(|| anyhow!("HOME or KEROSENE_PROFILES_FILE is required for --profile"))?;
+    let profiles: ProfilesFile = toml::from_str(
+        &fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?,
+    )
+    .with_context(|| format!("parse {}", path.display()))?;
+    profiles
+        .profiles
+        .get(name)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| anyhow!("profile {name} is absent from {}", path.display()))
+}
+
+fn ensure_private_file(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        bail!("credential path must be a regular file");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!("credential file permissions must not grant group or other access");
+        }
+    }
+    Ok(())
 }
 
 fn request_id(value: Option<String>) -> String {
@@ -485,14 +644,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 fn read_secret(path: &Path) -> Result<[u8; 32]> {
-    let metadata = fs::metadata(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            bail!("identity key permissions must not grant group or other access");
-        }
-    }
+    ensure_private_file(path)?;
     let bytes = hex::decode(fs::read_to_string(path)?.trim())?;
     bytes
         .try_into()
