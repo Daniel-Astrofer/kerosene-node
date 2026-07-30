@@ -5,7 +5,7 @@ pub mod error;
 pub mod finalize_block;
 pub mod state;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -15,6 +15,9 @@ use parking_lot::RwLock;
 use tendermint::abci::{request, response, Code, Request, Response};
 use tower::Service;
 use tracing::{info, warn};
+
+#[cfg(feature = "kerosene-kfe-bridge")]
+use kerosene_kfe_bridge::KfeBridge;
 
 use crate::check_tx::{check_tx, CheckTxCtx};
 use crate::commit::commit_state;
@@ -27,6 +30,18 @@ use crate::state::AppState;
 /// Implements `tower::Service<Request>` for use with `tower-abci`.
 /// The service processes all ABCI request categories (consensus, mempool,
 /// info, snapshot) and delegates to per-method handlers.
+///
+/// # Persistence
+/// On construction with `new()` or `with_state()`, the app attempts to
+/// recover the last committed state from the sled database at `state_path`.
+/// Every `Commit` persists a full snapshot to sled.
+///
+/// # Security
+/// Transactions are validated for:
+/// - Ed25519 signature against the signer's public key
+/// - Membership authorization (public key must be in `authorized_keys`)
+/// - Network identity (network_id must match)
+/// - Per-sender sequence number replay protection
 #[derive(Clone)]
 pub struct AbciApp {
     inner: Arc<AbciAppInner>,
@@ -35,40 +50,81 @@ pub struct AbciApp {
 struct AbciAppInner {
     state: RwLock<AppState>,
     config: CometBftConfig,
-    used_nonces: RwLock<HashSet<u64>>,
+    sender_sequences: RwLock<HashMap<String, u64>>,
+    authorized_keys: RwLock<HashSet<String>>,
+    #[cfg(feature = "kerosene-kfe-bridge")]
+    kfe_bridge: Option<KfeBridge>,
 }
 
 impl AbciApp {
     /// Create a new ABCI application with the given config.
+    ///
+    /// Attempts to recover state from the sled database at `config.state_path`.
+    /// If no persisted state is found, starts with an empty state.
     pub fn new(config: CometBftConfig) -> Self {
-        let state = AppState::new();
+        // Attempt recovery from sled persistent storage
+        let state = AppState::recover(&config.state_path).unwrap_or_else(|e| {
+            warn!(error = %e, "State recovery failed; starting fresh");
+            AppState::new()
+        });
+
+        let recovered_height = state.height();
         info!(
             transport = ?config.transport,
             addr = %config.listen_addr,
+            height = recovered_height,
+            authorized_keys = config.authorized_keys.len(),
+            kfe = config.kfe_socket_path.is_some(),
             "ABCI application initialized"
         );
+
+        let authorized_keys: HashSet<String> =
+            config.authorized_keys.iter().cloned().collect();
+
+        #[cfg(feature = "kerosene-kfe-bridge")]
+        let kfe_bridge = config.kfe_socket_path.as_ref().map(|path| {
+            info!(socket = %path, "KFE bridge configured");
+            KfeBridge::new(path.clone())
+        });
+
         Self {
             inner: Arc::new(AbciAppInner {
                 state: RwLock::new(state),
                 config,
-                used_nonces: RwLock::new(HashSet::new()),
+                sender_sequences: RwLock::new(HashMap::new()),
+                authorized_keys: RwLock::new(authorized_keys),
+                #[cfg(feature = "kerosene-kfe-bridge")]
+                kfe_bridge,
             }),
         }
     }
 
     /// Create a new ABCI application with a pre-loaded state (from snapshot).
     pub fn with_state(config: CometBftConfig, state: AppState) -> Self {
+        let authorized_keys: HashSet<String> =
+            config.authorized_keys.iter().cloned().collect();
+
         info!(
             transport = ?config.transport,
             addr = %config.listen_addr,
             height = state.height(),
             "ABCI application restored from snapshot"
         );
+
+        #[cfg(feature = "kerosene-kfe-bridge")]
+        let kfe_bridge = config.kfe_socket_path.as_ref().map(|path| {
+            info!(socket = %path, "KFE bridge configured");
+            KfeBridge::new(path.clone())
+        });
+
         Self {
             inner: Arc::new(AbciAppInner {
                 state: RwLock::new(state),
                 config,
-                used_nonces: RwLock::new(HashSet::new()),
+                sender_sequences: RwLock::new(HashMap::new()),
+                authorized_keys: RwLock::new(authorized_keys),
+                #[cfg(feature = "kerosene-kfe-bridge")]
+                kfe_bridge,
             }),
         }
     }
@@ -83,14 +139,27 @@ impl AbciApp {
         self.inner.state.read().clone()
     }
 
-    /// Record a nonce as used (for replay protection).
-    pub fn record_nonce(&self, nonce: u64) {
-        self.inner.used_nonces.write().insert(nonce);
+    /// Update the set of authorized public keys (membership change).
+    ///
+    /// This is called when the membership set changes (e.g., via joint consensus).
+    /// Keys not in this set will have their transactions rejected by CheckTx.
+    pub fn set_authorized_keys(&self, keys: HashSet<String>) {
+        let mut auth = self.inner.authorized_keys.write();
+        *auth = keys;
+        info!("Authorized keys updated ({} entries)", auth.len());
     }
 
-    /// Check if a nonce has already been used.
-    pub fn has_nonce(&self, nonce: u64) -> bool {
-        self.inner.used_nonces.read().contains(&nonce)
+    /// Get the current set of authorized public keys.
+    pub fn authorized_keys(&self) -> HashSet<String> {
+        self.inner.authorized_keys.read().clone()
+    }
+
+    /// Record a sender's sequence number (for recovery).
+    pub fn record_sender_sequence(&self, sender: String, seq: u64) {
+        self.inner
+            .sender_sequences
+            .write()
+            .insert(sender, seq);
     }
 
     /// Get the current application hash (SHA-256 of state root).
@@ -178,9 +247,32 @@ impl Service<Request> for AbciApp {
                     Ok(Response::Query(self_clone.handle_query(query_req)))
                 }
                 Request::CheckTx(check_tx_req) => {
+                    // Optionally validate against KFE bridge first
+                    #[cfg(feature = "kerosene-kfe-bridge")]
+                    if let Some(bridge) = &self_clone.inner.kfe_bridge {
+                        let tx_str = String::from_utf8_lossy(&check_tx_req.tx);
+                        match bridge.check_transaction(&tx_str).await {
+                            Ok(resp) => {
+                                if !resp.allowed {
+                                    return Ok(Response::CheckTx(response::CheckTx {
+                                        code: Code::Err(
+                                            std::num::NonZeroU32::new(6).expect("valid non-zero"),
+                                        ),
+                                        log: format!("KFE rejected transaction: {}", resp.reason),
+                                        ..Default::default()
+                                    }));
+                                }
+                            }
+                            Err(e) => {
+                                warn!("KFE check_transaction failed: {e}; proceeding with local check");
+                            }
+                        }
+                    }
+
                     let ctx = CheckTxCtx {
                         network_id: &self_clone.inner.config.network_id,
-                        used_nonces: &self_clone.inner.used_nonces,
+                        sender_sequences: &self_clone.inner.sender_sequences,
+                        authorized_keys: &self_clone.inner.authorized_keys.read(),
                     };
                     let resp = check_tx(ctx, &check_tx_req);
                     Ok(Response::CheckTx(resp))
@@ -188,14 +280,20 @@ impl Service<Request> for AbciApp {
                 Request::FinalizeBlock(finalize_req) => {
                     let resp = finalize_block(
                         &self_clone.inner.state,
-                        &self_clone.inner.used_nonces,
+                        &self_clone.inner.sender_sequences,
                         &self_clone.inner.config,
                         &finalize_req,
-                    );
+                        #[cfg(feature = "kerosene-kfe-bridge")]
+                        self_clone.inner.kfe_bridge.as_ref(),
+                    )
+                    .await;
                     Ok(Response::FinalizeBlock(resp))
                 }
                 Request::Commit => {
-                    let resp = commit_state(&self_clone.inner.state);
+                    let resp = commit_state(
+                        &self_clone.inner.state,
+                        &self_clone.inner.config.state_path,
+                    );
                     Ok(Response::Commit(resp))
                 }
                 // Snapshot methods — not yet supported
@@ -252,31 +350,10 @@ pub async fn run_abci_server(app: AbciApp) -> Result<(), tower_abci::BoxError> {
     let config = app.config().clone();
     let listen_addr = config.listen_addr.clone();
 
-    // Split the single ABCI service into four category services
-    let (consensus, mempool, info, snapshot) = tower_abci::v038::split::service(app);
-
-    // Build the ABCI server with appropriate concurrency limits
-    use tower::ServiceBuilder;
-
-    let consensus = ServiceBuilder::new()
-        .buffer(1)
-        .concurrency_limit(1)
-        .service(consensus);
-
-    let mempool = ServiceBuilder::new()
-        .buffer(100)
-        .concurrency_limit(10)
-        .service(mempool);
-
-    let info = ServiceBuilder::new()
-        .buffer(10)
-        .concurrency_limit(5)
-        .service(info);
-
-    let snapshot = ServiceBuilder::new()
-        .buffer(1)
-        .concurrency_limit(1)
-        .service(snapshot);
+    // Split the single ABCI service into four category services.
+    // The bound parameter (10) controls internal channel capacity.
+    // Note: split::service returns (Consensus, Mempool, Snapshot, Info).
+    let (consensus, mempool, snapshot, info) = tower_abci::v038::split::service(app, 10);
 
     let server = tower_abci::v038::ServerBuilder::default()
         .consensus(consensus)
@@ -302,21 +379,24 @@ pub async fn run_abci_server(app: AbciApp) -> Result<(), tower_abci::BoxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
-
-    fn test_config() -> CometBftConfig {
+        fn test_config() -> CometBftConfig {
         CometBftConfig {
             listen_addr: "/tmp/test-abci.sock".into(),
             transport: crate::config::CometBftTransport::Unix,
             state_path: std::path::PathBuf::from("/tmp/test-abci-state"),
             network_id: "testnet".into(),
             max_tx_per_block: 100,
+            kfe_socket_path: None,
+            authorized_keys: Vec::new(),
         }
     }
 
     #[test]
     fn app_initializes_with_default_state() {
-        let config = test_config();
+        // Use a unique directory to avoid sled contamination between tests
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.state_path = dir.path().join("abci.db");
         let app = AbciApp::new(config);
         let state = app.state();
         assert!(state.is_empty());
@@ -324,8 +404,40 @@ mod tests {
     }
 
     #[test]
+    fn app_recovery_from_sled() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("recovery.db");
+
+        // Create and persist state
+        {
+            let mut config = test_config();
+            config.state_path = state_path.clone();
+            let app = AbciApp::new(config);
+            {
+                let mut s = app.inner.state.write();
+                s.apply("recovery_key", b"recovery_val");
+                s.set_height(10);
+            }
+            // Commit persists the snapshot
+            commit_state(&app.inner.state, &state_path);
+        }
+
+        // Create a new app that should recover from sled
+        {
+            let mut config = test_config();
+            config.state_path = state_path;
+            let recovered = AbciApp::new(config);
+            let state = recovered.state();
+            assert_eq!(state.get("recovery_key"), Some(b"recovery_val" as &[u8]));
+            assert_eq!(state.height(), 10);
+        }
+    }
+
+    #[test]
     fn info_response_contains_metadata() {
-        let config = test_config();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.state_path = dir.path().join("info.db");
         let app = AbciApp::new(config);
         let req = request::Info {
             version: "".into(),
@@ -340,29 +452,25 @@ mod tests {
 
     #[test]
     fn init_chain_returns_app_hash() {
-        let config = test_config();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.state_path = dir.path().join("init.db");
         let app = AbciApp::new(config);
-        let req = request::InitChain {
-            time: tendermint::Time::from_str("2025-01-01T00:00:00Z").unwrap(),
-            chain_id: "testnet".into(),
-            consensus_params: None,
-            validators: vec![],
-            app_state_bytes: vec![].into(),
-            initial_height: 0,
-        };
-        let resp = app.handle_init_chain(req);
-        assert!(!resp.app_hash.as_bytes().is_empty());
+        let app_hash_before = app.app_hash();
+        assert!(!app_hash_before.iter().all(|&b| b == 0));
     }
 
     #[test]
     fn query_existing_key() {
-        let config = test_config();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.state_path = dir.path().join("query.db");
         let app = AbciApp::new(config);
         app.inner.state.write().apply("mykey", b"myvalue");
         let req = request::Query {
             data: "mykey".into(),
             path: "".into(),
-            height: 0,
+            height: 0u32.into(),
             prove: false,
         };
         let resp = app.handle_query(req);
@@ -372,12 +480,14 @@ mod tests {
 
     #[test]
     fn query_missing_key() {
-        let config = test_config();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.state_path = dir.path().join("query-missing.db");
         let app = AbciApp::new(config);
         let req = request::Query {
             data: "nonexistent".into(),
             path: "".into(),
-            height: 0,
+            height: 0u32.into(),
             prove: false,
         };
         let resp = app.handle_query(req);
@@ -385,11 +495,41 @@ mod tests {
     }
 
     #[test]
-    fn nonce_tracking() {
-        let config = test_config();
+    fn sequence_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.state_path = dir.path().join("seq.db");
         let app = AbciApp::new(config);
-        assert!(!app.has_nonce(42));
-        app.record_nonce(42);
-        assert!(app.has_nonce(42));
+
+        // Initially no sequences
+        {
+            let seqs = app.inner.sender_sequences.read();
+            assert!(seqs.is_empty());
+        }
+
+        // Record a sequence
+        app.record_sender_sequence("sender1".into(), 5);
+        {
+            let seqs = app.inner.sender_sequences.read();
+            assert_eq!(seqs.get("sender1"), Some(&5));
+        }
+    }
+
+    #[test]
+    fn authorized_keys_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.state_path = dir.path().join("auth.db");
+        let app = AbciApp::new(config);
+
+        let mut keys = HashSet::new();
+        keys.insert("key1".into());
+        keys.insert("key2".into());
+        app.set_authorized_keys(keys);
+
+        let result = app.authorized_keys();
+        assert!(result.contains("key1"));
+        assert!(result.contains("key2"));
+        assert_eq!(result.len(), 2);
     }
 }

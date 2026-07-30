@@ -8,11 +8,17 @@ pub enum AppError {
     #[error("invalid signature")]
     InvalidSignature,
 
-    #[error("replay attack detected: nonce {0} already used")]
-    DuplicateNonce(u64),
+    #[error("replay attack detected: sequence {1} from {0} already used")]
+    DuplicateSequence(String, u64),
 
     #[error("unknown command type: {0}")]
     UnknownCommand(String),
+
+    #[error("unauthorized key: {0}")]
+    UnauthorizedKey(String),
+
+    #[error("network mismatch: expected {0}, got {1}")]
+    NetworkMismatch(String, String),
 
     #[error("state error: {0}")]
     State(String),
@@ -35,6 +41,8 @@ pub enum Code {
     UnknownCommand = 5,
     KfeBridgeError = 6,
     TxAlreadyInCache = 7,
+    NetworkMismatch = 8,
+    UnauthorizedKey = 9,
 }
 
 impl Code {
@@ -48,8 +56,10 @@ impl From<&AppError> for Code {
         match err {
             AppError::InvalidTxFormat(_) => Code::EncodingError,
             AppError::InvalidSignature => Code::InvalidSignature,
-            AppError::DuplicateNonce(_) => Code::InvalidNonce,
+            AppError::DuplicateSequence(_, _) => Code::InvalidNonce,
             AppError::UnknownCommand(_) => Code::UnknownCommand,
+            AppError::UnauthorizedKey(_) => Code::UnauthorizedKey,
+            AppError::NetworkMismatch(_, _) => Code::NetworkMismatch,
             AppError::State(_) => Code::InternalError,
             AppError::Config(_) => Code::InternalError,
             AppError::KfeBridge(_) => Code::KfeBridgeError,

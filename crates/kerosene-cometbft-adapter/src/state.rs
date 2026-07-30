@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use crate::error::AppError;
 
@@ -10,6 +12,12 @@ use crate::error::AppError;
 /// Each key has an associated version (monotonic counter) and value.
 /// The state supports snapshot/restore for crash recovery and
 /// computes an AppHash as the SHA-256 root of the entire state.
+///
+/// Persistence is handled by a sled-backed WAL + snapshot mechanism:
+/// - Every mutation is first recorded in the WAL (write-ahead log)
+/// - On Commit, a full snapshot is persisted and the WAL is cleared
+/// - On startup, the latest snapshot is recovered; if no snapshot exists
+///   the WAL is replayed to reconstruct state (crash-before-snapshot recovery)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
     /// Internal versioned KV store.
@@ -151,6 +159,135 @@ impl AppState {
             .map(|(k, vv)| (k.as_str(), vv.value.as_slice(), vv.version))
             .collect()
     }
+
+    /// Persist a full state snapshot to the sled database at `path`.
+    ///
+    /// This writes the canonical JSON snapshot and flushes the sled db,
+    /// then clears the WAL (all WAL entries are consumed by the snapshot).
+    pub fn persist_snapshot(&self, path: &Path) -> Result<(), AppError> {
+        let db = sled::open(path).map_err(|e| AppError::State(e.to_string()))?;
+        let snapshot = self.snapshot()?;
+        db.insert(b"state_snapshot", snapshot.as_slice())
+            .map_err(|e| AppError::State(e.to_string()))?;
+        // Clear WAL entries — they are now reflected in the snapshot
+        let wal_keys: Vec<_> = db
+            .scan_prefix(b"wal:")
+            .keys()
+            .filter_map(|k| k.ok())
+            .collect();
+        for key in &wal_keys {
+            db.remove(key).map_err(|e| AppError::State(e.to_string()))?;
+        }
+        db.flush().map_err(|e| AppError::State(e.to_string()))?;
+        info!("State snapshot persisted at height {}", self.height);
+        Ok(())
+    }
+
+    /// Recover state from a sled database at `path`.
+    ///
+    /// Recovery strategy:
+    /// 1. Try loading the latest full snapshot
+    /// 2. If no snapshot exists, replay WAL entries from scratch
+    /// 3. If the database doesn't exist or is empty, return a fresh state
+    pub fn recover(path: &Path) -> Result<Self, AppError> {
+        let db = match sled::open(path) {
+            Ok(db) => db,
+            Err(e) => {
+                info!("No existing state database at {path:?}: {e}; starting fresh");
+                return Ok(Self::new());
+            }
+        };
+
+        // Try loading a full snapshot first
+        if let Some(snapshot_data) = db
+            .get(b"state_snapshot")
+            .map_err(|e| AppError::State(e.to_string()))?
+        {
+            let state = Self::restore(&snapshot_data)?;
+            info!(
+                height = state.height,
+                version = state.app_version,
+                "State recovered from snapshot"
+            );
+            return Ok(state);
+        }
+
+        // No snapshot — replay WAL to reconstruct state
+        let mut state = Self::new();
+        let wal_entries: Vec<_> = db
+            .scan_prefix(b"wal:")
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if wal_entries.is_empty() {
+            info!("Empty state database at {path:?}; starting fresh");
+            return Ok(state);
+        }
+
+        for (key_bytes, value_bytes) in &wal_entries {
+            let key_str = String::from_utf8_lossy(key_bytes);
+            // WAL key format: "wal:{seq:020}:{op}:{state_key}"
+            // Strip "wal:" prefix, then skip the sequence number and extract op:key
+            if let Some(after_prefix) = key_str.strip_prefix("wal:") {
+                if let Some(seq_and_rest) = after_prefix.split_once(':') {
+                    let rest = seq_and_rest.1; // "{op}:{state_key}"
+                    if let Some(op_key) = rest.split_once(':') {
+                        let state_key = op_key.1.to_string();
+                        match op_key.0 {
+                            "SET" => {
+                                state.store.insert(
+                                    state_key,
+                                    VersionedValue {
+                                        value: value_bytes.to_vec(),
+                                        version: 0,
+                                    },
+                                );
+                            }
+                            "DEL" => {
+                                state.store.remove(&state_key);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        info!(
+            entries = state.store.len(),
+            "State recovered from WAL replay"
+        );
+        Ok(state)
+    }
+
+    /// Record a WAL entry before applying a state mutation.
+    ///
+    /// Each WAL entry includes a monotonic sequence number to preserve
+    /// insertion order during recovery (sled returns keys in sorted order,
+    /// so `wal:SET:k` and `wal:DEL:k` would sort lexicographically by operation
+    /// name, breaking the intended order). The sequence number is stored as
+    /// a sled atomic counter, ensuring crash-safe ordering.
+    pub fn record_wal_set(path: &Path, key: &str, value: &[u8]) -> Result<(), AppError> {
+        let db = sled::open(path).map_err(|e| AppError::State(e.to_string()))?;
+        let seq = db
+            .generate_id()
+            .map_err(|e| AppError::State(e.to_string()))?;
+        let wal_key = format!("wal:{seq:020}:SET:{key}");
+        db.insert(wal_key.as_bytes(), value)
+            .map_err(|e| AppError::State(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Record a WAL deletion entry.
+    pub fn record_wal_delete(path: &Path, key: &str) -> Result<(), AppError> {
+        let db = sled::open(path).map_err(|e| AppError::State(e.to_string()))?;
+        let seq = db
+            .generate_id()
+            .map_err(|e| AppError::State(e.to_string()))?;
+        let wal_key = format!("wal:{seq:020}:DEL:{key}");
+        db.insert(wal_key.as_bytes(), b"")
+            .map_err(|e| AppError::State(e.to_string()))?;
+        Ok(())
+    }
 }
 
 impl Default for AppState {
@@ -263,5 +400,91 @@ mod tests {
         let entries = state.entries();
         let keys: Vec<&str> = entries.iter().map(|(k, _, _)| *k).collect();
         assert_eq!(keys, vec!["a", "m", "z"]);
+    }
+
+    #[test]
+    fn persist_and_recover_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+
+        let mut state = AppState::new();
+        state.apply("alice", b"100");
+        state.apply("bob", b"200");
+        state.set_height(7);
+        state.increment_version();
+
+        state.persist_snapshot(&db_path).unwrap();
+
+        let recovered = AppState::recover(&db_path).unwrap();
+        assert_eq!(recovered.get("alice"), Some(b"100" as &[u8]));
+        assert_eq!(recovered.get("bob"), Some(b"200" as &[u8]));
+        assert_eq!(recovered.height(), 7);
+        assert_eq!(recovered.app_version(), 1);
+        assert_eq!(recovered.root_hash(), state.root_hash());
+    }
+
+    #[test]
+    fn recover_empty_db_returns_fresh_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("empty.db");
+
+        let state = AppState::recover(&db_path).unwrap();
+        assert!(state.is_empty());
+        assert_eq!(state.height(), 0);
+    }
+
+    #[test]
+    fn wal_set_recorded_and_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("wal-test.db");
+
+        // Record WAL entries (simulating crash before snapshot)
+        AppState::record_wal_set(&db_path, "key1", b"value1").unwrap();
+        AppState::record_wal_set(&db_path, "key2", b"value2").unwrap();
+
+        // Recover from WAL (no snapshot exists)
+        let state = AppState::recover(&db_path).unwrap();
+        assert_eq!(state.get("key1"), Some(b"value1" as &[u8]));
+        assert_eq!(state.get("key2"), Some(b"value2" as &[u8]));
+    }
+
+    #[test]
+    fn wal_deletion_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("wal-del-test.db");
+
+        AppState::record_wal_set(&db_path, "k", b"v").unwrap();
+        AppState::record_wal_delete(&db_path, "k").unwrap();
+
+        let state = AppState::recover(&db_path).unwrap();
+        assert!(!state.has("k"));
+    }
+
+    #[test]
+    fn snapshot_clears_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("snapshot-wal-test.db");
+
+        AppState::record_wal_set(&db_path, "a", b"1").unwrap();
+        AppState::record_wal_set(&db_path, "b", b"2").unwrap();
+
+        // Persist a snapshot (this clears WAL)
+        let mut state = AppState::new();
+        state.apply("a", b"1");
+        state.apply("b", b"2");
+        state.persist_snapshot(&db_path).unwrap();
+
+        // Verify snapshot was persisted
+        let recovered = AppState::recover(&db_path).unwrap();
+        assert_eq!(recovered.get("a"), Some(b"1" as &[u8]));
+        assert_eq!(recovered.get("b"), Some(b"2" as &[u8]));
+
+        // Verify WAL was cleared: recording more WAL entries and recovering
+        // should only return snapshot data
+        let db = sled::open(&db_path).unwrap();
+        let wal_count: usize = db
+            .scan_prefix(b"wal:")
+            .count();
+        assert_eq!(wal_count, 0, "WAL should be cleared after snapshot");
     }
 }

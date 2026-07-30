@@ -21,12 +21,16 @@ pub struct CometBftConfig {
     pub listen_addr: String,
     /// Transport mode.
     pub transport: CometBftTransport,
-    /// Path to persist application state.
+    /// Path to persist application state (sled database).
     pub state_path: PathBuf,
     /// Network ID for transaction validation.
     pub network_id: String,
     /// Maximum number of transactions per block.
     pub max_tx_per_block: u32,
+    /// Optional Unix socket path to the KFE Java service.
+    pub kfe_socket_path: Option<String>,
+    /// Hex-encoded Ed25519 public keys authorized to submit transactions.
+    pub authorized_keys: Vec<String>,
 }
 
 impl CometBftConfig {
@@ -69,12 +73,23 @@ impl CometBftConfig {
             .map_err(|e| AppError::Config(format!("invalid KEROSENE_ABCI_MAX_TX_PER_BLOCK: {e}")))?
             .unwrap_or(1000);
 
+        let kfe_socket_path = env::var("KEROSENE_KFE_SOCKET_PATH").ok();
+
+        let authorized_keys_raw = env::var("KEROSENE_AUTHORIZED_KEYS").unwrap_or_default();
+        let authorized_keys: Vec<String> = if authorized_keys_raw.is_empty() {
+            Vec::new()
+        } else {
+            authorized_keys_raw.split(',').map(|s| s.trim().to_string()).collect()
+        };
+
         Ok(Self {
             listen_addr,
             transport,
             state_path,
             network_id,
             max_tx_per_block,
+            kfe_socket_path,
+            authorized_keys,
         })
     }
 }
@@ -85,7 +100,7 @@ mod tests {
 
     #[test]
     fn config_defaults() {
-        temp_env::with_vars_unset([
+        temp_env::with_vars_unset(&[
             "KEROSENE_ABCI_LISTEN_ADDR",
             "KEROSENE_ABCI_TRANSPORT",
             "KEROSENE_ABCI_STATE_PATH",
@@ -99,7 +114,7 @@ mod tests {
 
     #[test]
     fn config_with_network_id() {
-        temp_env::with_vars([
+        temp_env::with_vars(&[
             ("KEROSENE_NETWORK_ID", Some("testnet-1")),
             ("KEROSENE_ABCI_LISTEN_ADDR", Some("/tmp/test.sock")),
             ("KEROSENE_ABCI_TRANSPORT", Some("unix")),
@@ -114,7 +129,7 @@ mod tests {
 
     #[test]
     fn config_tcp_transport() {
-        temp_env::with_vars([
+        temp_env::with_vars(&[
             ("KEROSENE_NETWORK_ID", Some("testnet-1")),
             ("KEROSENE_ABCI_TRANSPORT", Some("tcp")),
             ("KEROSENE_ABCI_LISTEN_ADDR", Some("127.0.0.1:26658")),
@@ -127,7 +142,7 @@ mod tests {
 
     #[test]
     fn config_invalid_transport() {
-        temp_env::with_vars([
+        temp_env::with_vars(&[
             ("KEROSENE_NETWORK_ID", Some("testnet-1")),
             ("KEROSENE_ABCI_TRANSPORT", Some("quic")),
         ], || {
@@ -149,14 +164,14 @@ mod temp_env {
 
     static TEST_ENV: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
-    pub fn with_vars(vars: Vec<(&str, Option<&str>)>, f: impl FnOnce()) {
+    pub fn with_vars(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
         let previous = std::env::vars().collect::<HashMap<_, _>>();
         // Clear
         for (key, _) in &previous {
             std::env::remove_var(key);
         }
         // Set test vars
-        for (key, value) in &vars {
+        for (key, value) in vars {
             match value {
                 Some(v) => std::env::set_var(key, v),
                 None => std::env::remove_var(key),

@@ -10,10 +10,12 @@ bytes = "1"
 ed25519-dalek.workspace = true
 hex.workspace = true
 kerosene-identity-core = { path = "../kerosene-identity-core" }
+kerosene-kfe-bridge = { path = "../kerosene-kfe-bridge", optional = true }
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sled.workspace = true
 tendermint.workspace = true
 tendermint-proto.workspace = true
 thiserror.workspace = true
