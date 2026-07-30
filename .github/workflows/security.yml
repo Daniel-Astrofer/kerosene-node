@@ -20,6 +20,12 @@ jobs:
     with:
       enforce-format: true
 
+  rsctl:
+    uses: Daniel-Astrofer/.github/.github/workflows/admin-cli-ci.yml@829c04ccb3ba3d171695e848fadadca6a13bf20e
+    with:
+      language: rust
+      package: kerosene-rsctl
+
   tests:
     name: Discovery and membership tests
     runs-on: ubuntu-latest

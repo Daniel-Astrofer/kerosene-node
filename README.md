@@ -25,6 +25,7 @@ crates/
 ├── kerosene-membership     # signed manifests and OLD -> JOINT -> NEW
 ├── kerosene-sync           # lifecycle and state-root verification traits
 └── kerosene-node           # HTTPS API and discovery runtime
+└── kerosene-rsctl          # operator CLI; no embedded authority
 ```
 
 Wire types come from a commit-pinned `kerosene-contracts` dependency.
@@ -55,3 +56,17 @@ cargo test --workspace --all-features
 Security assumptions and release gates are documented in
 [THREAT_MODEL.md](docs/THREAT_MODEL.md) and
 [PRODUCTION_GATES.md](docs/PRODUCTION_GATES.md).
+
+## Administrative CLI
+
+`kerosene-rsctl` provides read-only health, peers, membership, quorum,
+compatibility and artifact diagnostics. It also supports an offline
+create/sign/verify/publish membership ceremony. Private identity files must be
+mode `0600`; secrets are never accepted as inline command arguments.
+
+```bash
+cargo run -p kerosene-rsctl -- node status \
+  --endpoint https://example.onion:8800 --output json-pretty
+cargo run -p kerosene-rsctl -- membership verify \
+  --manifest signed.json --trust-bundle genesis.json
+```
