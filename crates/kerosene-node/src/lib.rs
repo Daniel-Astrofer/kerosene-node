@@ -113,6 +113,7 @@ impl NodeService {
             .route("/ready-financial", get(ready_financial))
             .route("/v1/readiness", get(readiness))
             .route("/v1/discovery/challenge", get(challenge))
+            .route("/v1/discovery/peers", get(peers))
             .route("/v1/discovery/hello", post(hello))
             .route("/v1/membership/current", get(current_manifest))
             .route("/v1/membership", post(accept_manifest))
@@ -239,6 +240,14 @@ impl NodeService {
         self.inner.membership.read().current().cloned()
     }
 
+    pub fn authenticated_peers(
+        &self,
+    ) -> Result<Vec<kerosene_discovery::EndpointRecord>, DiscoveryError> {
+        self.inner
+            .peer_store
+            .authenticated_endpoints(self.inner.plane)
+    }
+
     pub async fn synchronize_state(
         &self,
         synchronizer: &dyn StateSynchronizer,
@@ -342,6 +351,15 @@ async fn challenge(State(service): State<NodeService>) -> Json<ChallengeResponse
     Json(ChallengeResponse {
         challenge: service.issue_challenge(now_epoch_ms()),
     })
+}
+
+async fn peers(
+    State(service): State<NodeService>,
+) -> Result<Json<Vec<kerosene_discovery::EndpointRecord>>, StatusCode> {
+    service
+        .authenticated_peers()
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn hello(
