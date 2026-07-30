@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state_machine::MembershipView;
 use crate::metrics::LedgerMetrics;
 use crate::reconciliation::ReconciliationReport;
 use crate::replication::{ReplicationStatus, SyncStatus};
+use crate::state_machine::MembershipView;
 
 // ---------------------------------------------------------------------------
 // GateResult
@@ -71,7 +71,8 @@ impl DegradedMode {
         match self {
             DegradedMode::Normal => true,
             DegradedMode::Degraded {
-                withdrawals_blocked, ..
+                withdrawals_blocked,
+                ..
             } => !withdrawals_blocked,
             DegradedMode::ReadOnly => false,
         }
@@ -162,7 +163,10 @@ impl ProductionGates {
         }
 
         // Quorum availability (inferred from sync status)
-        if status.committed_sequence == 0 && status.applied_sequence == 0 && metrics.quorum_unavailable_total > 0 {
+        if status.committed_sequence == 0
+            && status.applied_sequence == 0
+            && metrics.quorum_unavailable_total > 0
+        {
             reasons.push("quorum appears unavailable".into());
         }
 
@@ -178,10 +182,7 @@ impl ProductionGates {
     /// Blocked if:
     /// - Sync is not healthy (Diverged / Quarantined)
     /// - Node is significantly behind
-    pub fn can_accept_deposits(
-        metrics: &LedgerMetrics,
-        status: &ReplicationStatus,
-    ) -> GateResult {
+    pub fn can_accept_deposits(metrics: &LedgerMetrics, status: &ReplicationStatus) -> GateResult {
         let mut reasons = Vec::new();
 
         // Sync health
@@ -387,7 +388,11 @@ mod tests {
         let status = healthy_status();
 
         let result = ProductionGates::can_authorize_withdrawals(&metrics, &report, &status);
-        assert!(result.allowed, "expected allowed, got reasons: {:?}", result.reasons);
+        assert!(
+            result.allowed,
+            "expected allowed, got reasons: {:?}",
+            result.reasons
+        );
     }
 
     #[test]
@@ -590,8 +595,7 @@ mod tests {
         let status = healthy_status();
         let membership = test_membership();
 
-        let mode =
-            ProductionGates::evaluate_degraded_mode(&metrics, &report, &status, &membership);
+        let mode = ProductionGates::evaluate_degraded_mode(&metrics, &report, &status, &membership);
         assert_eq!(mode, DegradedMode::Normal);
     }
 
@@ -606,8 +610,7 @@ mod tests {
         let status = healthy_status();
         let membership = test_membership();
 
-        let mode =
-            ProductionGates::evaluate_degraded_mode(&metrics, &report, &status, &membership);
+        let mode = ProductionGates::evaluate_degraded_mode(&metrics, &report, &status, &membership);
         assert!(matches!(mode, DegradedMode::Degraded { .. }));
     }
 

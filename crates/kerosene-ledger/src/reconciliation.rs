@@ -120,7 +120,12 @@ impl ReconciliationEngine {
         state
             .utxos
             .iter()
-            .filter(|u| !matches!(u.state, crate::chain::OnchainState::Spent | crate::chain::OnchainState::Replaced))
+            .filter(|u| {
+                !matches!(
+                    u.state,
+                    crate::chain::OnchainState::Spent | crate::chain::OnchainState::Replaced
+                )
+            })
             .map(|u| u.value_sats)
             .fold(0u64, u64::saturating_add)
     }
@@ -361,10 +366,7 @@ mod tests {
         acc2.reserved_sats = 20_000;
         state.accounts.push(acc2);
 
-        assert_eq!(
-            ReconciliationEngine::compute_total_reserved(&state),
-            30_000
-        );
+        assert_eq!(ReconciliationEngine::compute_total_reserved(&state), 30_000);
     }
 
     #[test]
@@ -380,19 +382,12 @@ mod tests {
         ));
 
         // Spent UTXO — should NOT count
-        let mut spent = crate::chain::UtxoEntry::new_seen(
-            OutPoint::new("tx2", 0),
-            200_000,
-            "addr2",
-            100,
-        );
+        let mut spent =
+            crate::chain::UtxoEntry::new_seen(OutPoint::new("tx2", 0), 200_000, "addr2", 100);
         spent.state = OnchainState::Spent;
         state.utxos.push(spent);
 
-        assert_eq!(
-            ReconciliationEngine::compute_total_assets(&state),
-            50_000
-        );
+        assert_eq!(ReconciliationEngine::compute_total_assets(&state), 50_000);
     }
 
     #[test]

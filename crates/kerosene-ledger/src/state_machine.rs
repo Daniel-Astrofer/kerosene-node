@@ -104,18 +104,43 @@ impl LedgerCommand {
 
     /// Computes a deterministic SHA-256 payload hash from the command's
     /// semantic fields (excludes `command_id` and the `payload_hash` itself).
+    ///
+    /// Uses canonical binary encoding:
+    /// - Domain-separated tag prefix
+    /// - Binary u64 for numeric fields
+    /// - Stable discriminator for command_type
+    /// - Option flag + value for expected_version
+    /// - Length-prefixed strings
     pub fn compute_payload_hash(&self) -> String {
         let mut hasher = Sha256::new();
-        let material = format!(
-            "LedgerCommand|{}|{}|{:?}|{}|{}|{}",
-            self.command_type as u8,
-            self.partition_key,
-            self.expected_version,
-            self.authorization_commitment,
-            self.epoch,
-            self.created_at_bucket,
-        );
-        hasher.update(material.as_bytes());
+        hasher.update(b"KROOTv1:LedgerCommand");
+
+        // command_type as stable u8
+        hasher.update(&[self.command_type as u8]);
+
+        // expected_version as Option<u64>
+        match self.expected_version {
+            Some(v) => {
+                hasher.update(&[1u8]);
+                hasher.update(&v.to_le_bytes());
+            }
+            None => {
+                hasher.update(&[0u8]);
+            }
+        }
+
+        // partition_key (length-prefixed)
+        hasher.update(&(self.partition_key.len() as u64).to_le_bytes());
+        hasher.update(self.partition_key.as_bytes());
+
+        // authorization_commitment (length-prefixed)
+        hasher.update(&(self.authorization_commitment.len() as u64).to_le_bytes());
+        hasher.update(self.authorization_commitment.as_bytes());
+
+        // epoch and created_at_bucket (binary u64)
+        hasher.update(&self.epoch.to_le_bytes());
+        hasher.update(&self.created_at_bucket.to_le_bytes());
+
         hex::encode(hasher.finalize())
     }
 }
@@ -125,15 +150,25 @@ impl LedgerCommand {
 // ---------------------------------------------------------------------------
 
 /// The consensus profile a cluster is running under.
+///
+/// # Profiles
+/// - `Single`: Single-node mode with self-signed quorum certificates.
+///   Suitable for development, testing, and single-operator deployments.
+/// - `HaCrash`: High-availability crash-fault tolerant mode.
+///   Supports multiple nodes where up to f nodes may crash but not
+///   behave maliciously. Uses a leader-based PBFT-like protocol with
+///   crash detection and view changes.
+/// - `BftF1`: Byzantine fault tolerant with f=1 (tolerates 1 malicious node).
+/// - `BftF2`: Byzantine fault tolerant with f=2 (tolerates 2 malicious nodes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConsensusProfile {
     /// Single-node (self-signed quorum certificates).
     Single,
-    /// High-availability crash-fault tolerant (future).
+    /// High-availability crash-fault tolerant.
     HaCrash,
-    /// Byzantine fault tolerant with f=1 (future).
+    /// Byzantine fault tolerant with f=1.
     BftF1,
-    /// Byzantine fault tolerant with f=2 (future).
+    /// Byzantine fault tolerant with f=2.
     BftF2,
 }
 
@@ -234,7 +269,9 @@ impl LedgerState {
 
     /// Finds a reservation by ID.
     pub fn find_reservation(&self, reservation_id: &str) -> Option<&Reservation> {
-        self.reservations.iter().find(|r| r.reservation_id == reservation_id)
+        self.reservations
+            .iter()
+            .find(|r| r.reservation_id == reservation_id)
     }
 }
 
@@ -302,10 +339,7 @@ pub struct StateMachine;
 
 impl StateMachine {
     /// Validate a credit-internal-balance command.
-    fn validate_credit(
-        state: &LedgerState,
-        cmd: &LedgerCommand,
-    ) -> Result<(), LedgerError> {
+    fn validate_credit(state: &LedgerState, cmd: &LedgerCommand) -> Result<(), LedgerError> {
         if let Some(expected_version) = cmd.expected_version {
             if let Some(account) = state.find_account(&cmd.partition_key) {
                 account.check_version(expected_version)?;
@@ -321,17 +355,15 @@ impl StateMachine {
     }
 
     /// Validate a debit-internal-balance command.
-    fn validate_debit(
-        state: &LedgerState,
-        cmd: &LedgerCommand,
-    ) -> Result<(), LedgerError> {
-        let account = state
-            .find_account(&cmd.partition_key)
-            .ok_or_else(|| LedgerError::VersionConflict {
-                account: cmd.partition_key.clone(),
-                expected: cmd.expected_version.unwrap_or(0),
-                current: 0,
-            })?;
+    fn validate_debit(state: &LedgerState, cmd: &LedgerCommand) -> Result<(), LedgerError> {
+        let account =
+            state
+                .find_account(&cmd.partition_key)
+                .ok_or_else(|| LedgerError::VersionConflict {
+                    account: cmd.partition_key.clone(),
+                    expected: cmd.expected_version.unwrap_or(0),
+                    current: 0,
+                })?;
 
         if let Some(expected_version) = cmd.expected_version {
             account.check_version(expected_version)?;
@@ -342,27 +374,25 @@ impl StateMachine {
         //
         // We also check in validate for completeness.
         let _amount = 0u64; // amount comes from the command's payload — but how?
-        // The LedgerCommand doesn't have an amount_sats field! It's a generic command.
-        // We need to make the validate/apply methods work without knowing the
-        // specific amount. For commands that need amounts, the partition_key or
-        // some other field carries it.
-        //
-        // For now, debit validation just checks the account exists and version.
+                            // The LedgerCommand doesn't have an amount_sats field! It's a generic command.
+                            // We need to make the validate/apply methods work without knowing the
+                            // specific amount. For commands that need amounts, the partition_key or
+                            // some other field carries it.
+                            //
+                            // For now, debit validation just checks the account exists and version.
         Ok(())
     }
 
     /// Validate a reserve command.
-    fn validate_reserve(
-        state: &LedgerState,
-        cmd: &LedgerCommand,
-    ) -> Result<(), LedgerError> {
-        let account = state
-            .find_account(&cmd.partition_key)
-            .ok_or_else(|| LedgerError::VersionConflict {
-                account: cmd.partition_key.clone(),
-                expected: cmd.expected_version.unwrap_or(0),
-                current: 0,
-            })?;
+    fn validate_reserve(state: &LedgerState, cmd: &LedgerCommand) -> Result<(), LedgerError> {
+        let account =
+            state
+                .find_account(&cmd.partition_key)
+                .ok_or_else(|| LedgerError::VersionConflict {
+                    account: cmd.partition_key.clone(),
+                    expected: cmd.expected_version.unwrap_or(0),
+                    current: 0,
+                })?;
 
         if let Some(expected_version) = cmd.expected_version {
             account.check_version(expected_version)?;
@@ -392,10 +422,7 @@ impl StateMachine {
     }
 
     /// Validate an internal transfer command.
-    fn validate_transfer(
-        _state: &LedgerState,
-        _cmd: &LedgerCommand,
-    ) -> Result<(), LedgerError> {
+    fn validate_transfer(_state: &LedgerState, _cmd: &LedgerCommand) -> Result<(), LedgerError> {
         // Transfer requires both source and destination to exist.
         // The LedgerCommand encodes the transfer as two partition_key values
         // separated by a delimiter. The apply method handles the details.
@@ -410,43 +437,31 @@ impl StateMachine {
 }
 
 impl DeterministicStateMachine for StateMachine {
-    fn validate(
-        &self,
-        state: &LedgerState,
-        command: &LedgerCommand,
-    ) -> Result<(), LedgerError> {
+    fn validate(&self, state: &LedgerState, command: &LedgerCommand) -> Result<(), LedgerError> {
         match command.command_type {
-            LedgerCommandType::CreditInternalBalance => {
-                Self::validate_credit(state, command)
-            }
-            LedgerCommandType::DebitInternalBalance => {
-                Self::validate_debit(state, command)
-            }
-            LedgerCommandType::ReserveBalance => {
-                Self::validate_reserve(state, command)
-            }
+            LedgerCommandType::CreditInternalBalance => Self::validate_credit(state, command),
+            LedgerCommandType::DebitInternalBalance => Self::validate_debit(state, command),
+            LedgerCommandType::ReserveBalance => Self::validate_reserve(state, command),
             LedgerCommandType::ReleaseReservation => {
                 Self::validate_release_reservation(state, command)
             }
-            LedgerCommandType::CommitInternalTransfer => {
-                Self::validate_transfer(state, command)
-            }
+            LedgerCommandType::CommitInternalTransfer => Self::validate_transfer(state, command),
             LedgerCommandType::DetectUtxo => {
                 // Validate that partition_key is a valid outpoint
                 OutPoint::from_canonical_string(&command.partition_key)?;
                 // Validate that authorization_commitment is valid JSON
-                let payload: DetectUtxoPayload = serde_json::from_str(&command.authorization_commitment)
-                    .map_err(|e| LedgerError::InvalidUtxoData(format!(
-                        "invalid DetectUtxo payload: {}", e
-                    )))?;
+                let payload: DetectUtxoPayload =
+                    serde_json::from_str(&command.authorization_commitment).map_err(|e| {
+                        LedgerError::InvalidUtxoData(format!("invalid DetectUtxo payload: {}", e))
+                    })?;
                 if payload.value_sats == 0 {
                     return Err(LedgerError::InvalidUtxoData(
-                        "DetectUtxo value_sats must be > 0".into()
+                        "DetectUtxo value_sats must be > 0".into(),
                     ));
                 }
                 if payload.address.is_empty() {
                     return Err(LedgerError::InvalidUtxoData(
-                        "DetectUtxo address must not be empty".into()
+                        "DetectUtxo address must not be empty".into(),
                     ));
                 }
                 Ok(())
@@ -454,10 +469,13 @@ impl DeterministicStateMachine for StateMachine {
             LedgerCommandType::ConfirmUtxo => {
                 let outpoint = OutPoint::from_canonical_string(&command.partition_key)?;
                 // Validate block_height is a valid number
-                let _block_height: u64 = command.authorization_commitment.parse()
-                    .map_err(|_| LedgerError::InvalidUtxoData(
-                        "ConfirmUtxo authorization_commitment must be a valid block height".into()
-                    ))?;
+                let _block_height: u64 =
+                    command.authorization_commitment.parse().map_err(|_| {
+                        LedgerError::InvalidUtxoData(
+                            "ConfirmUtxo authorization_commitment must be a valid block height"
+                                .into(),
+                        )
+                    })?;
                 // Validate UTXO exists and can transition
                 if let Some(utxo) = state.utxos.iter().find(|u| u.outpoint == outpoint) {
                     UtxoTransitionGate::validate_transition(utxo.state, OnchainState::Confirming)?;
@@ -486,11 +504,14 @@ impl DeterministicStateMachine for StateMachine {
                 let reserved_by = &command.authorization_commitment;
                 if reserved_by.is_empty() {
                     return Err(LedgerError::InvalidUtxoData(
-                        "ReserveUtxo authorization_commitment must specify reserved_by".into()
+                        "ReserveUtxo authorization_commitment must specify reserved_by".into(),
                     ));
                 }
                 if let Some(utxo) = state.utxos.iter().find(|u| u.outpoint == outpoint) {
-                    if !matches!(utxo.state, OnchainState::Spendable | OnchainState::FinalizedByPolicy) {
+                    if !matches!(
+                        utxo.state,
+                        OnchainState::Spendable | OnchainState::FinalizedByPolicy
+                    ) {
                         return Err(LedgerError::InvalidUtxoTransition {
                             from: utxo.state,
                             to: utxo.state,
@@ -537,10 +558,10 @@ impl DeterministicStateMachine for StateMachine {
             }
             LedgerCommandType::ApplyChainReorganization => {
                 // Validate we can parse the reorg payload
-                let _payload: ReorgPayload = serde_json::from_str(&command.authorization_commitment)
-                    .map_err(|e| LedgerError::InvalidUtxoData(format!(
-                        "invalid ReorgPayload: {}", e
-                    )))?;
+                let _payload: ReorgPayload =
+                    serde_json::from_str(&command.authorization_commitment).map_err(|e| {
+                        LedgerError::InvalidUtxoData(format!("invalid ReorgPayload: {}", e))
+                    })?;
                 Ok(())
             }
             LedgerCommandType::PrepareWithdrawal
@@ -636,10 +657,10 @@ impl DeterministicStateMachine for StateMachine {
             }
             LedgerCommandType::DetectUtxo => {
                 let outpoint = OutPoint::from_canonical_string(&command.partition_key)?;
-                let payload: DetectUtxoPayload = serde_json::from_str(&command.authorization_commitment)
-                    .map_err(|e| LedgerError::InvalidUtxoData(format!(
-                        "invalid DetectUtxo payload: {}", e
-                    )))?;
+                let payload: DetectUtxoPayload =
+                    serde_json::from_str(&command.authorization_commitment).map_err(|e| {
+                        LedgerError::InvalidUtxoData(format!("invalid DetectUtxo payload: {}", e))
+                    })?;
 
                 // Idempotent: if UTXO already exists, update state if reorged
                 let existing_idx = state.utxos.iter().position(|u| u.outpoint == outpoint);
@@ -667,12 +688,16 @@ impl DeterministicStateMachine for StateMachine {
             }
             LedgerCommandType::ConfirmUtxo => {
                 let outpoint = OutPoint::from_canonical_string(&command.partition_key)?;
-                let block_height: u64 = command.authorization_commitment.parse()
-                    .map_err(|_| LedgerError::InvalidUtxoData(
-                        "ConfirmUtxo authorization_commitment must be a valid block height".into()
-                    ))?;
+                let block_height: u64 = command.authorization_commitment.parse().map_err(|_| {
+                    LedgerError::InvalidUtxoData(
+                        "ConfirmUtxo authorization_commitment must be a valid block height".into(),
+                    )
+                })?;
 
-                let utxo = state.utxos.iter_mut().find(|u| u.outpoint == outpoint)
+                let utxo = state
+                    .utxos
+                    .iter_mut()
+                    .find(|u| u.outpoint == outpoint)
                     .ok_or_else(|| LedgerError::UtxoNotFound {
                         txid: outpoint.txid.clone(),
                         vout: outpoint.vout,
@@ -687,7 +712,10 @@ impl DeterministicStateMachine for StateMachine {
             LedgerCommandType::MarkUtxoSpendable => {
                 let outpoint = OutPoint::from_canonical_string(&command.partition_key)?;
 
-                let utxo = state.utxos.iter_mut().find(|u| u.outpoint == outpoint)
+                let utxo = state
+                    .utxos
+                    .iter_mut()
+                    .find(|u| u.outpoint == outpoint)
                     .ok_or_else(|| LedgerError::UtxoNotFound {
                         txid: outpoint.txid.clone(),
                         vout: outpoint.vout,
@@ -701,13 +729,19 @@ impl DeterministicStateMachine for StateMachine {
                 let outpoint = OutPoint::from_canonical_string(&command.partition_key)?;
                 let reserved_by = &command.authorization_commitment;
 
-                let utxo = state.utxos.iter_mut().find(|u| u.outpoint == outpoint)
+                let utxo = state
+                    .utxos
+                    .iter_mut()
+                    .find(|u| u.outpoint == outpoint)
                     .ok_or_else(|| LedgerError::UtxoNotFound {
                         txid: outpoint.txid.clone(),
                         vout: outpoint.vout,
                     })?;
 
-                if !matches!(utxo.state, OnchainState::Spendable | OnchainState::FinalizedByPolicy) {
+                if !matches!(
+                    utxo.state,
+                    OnchainState::Spendable | OnchainState::FinalizedByPolicy
+                ) {
                     return Err(LedgerError::InvalidUtxoTransition {
                         from: utxo.state,
                         to: utxo.state,
@@ -726,7 +760,10 @@ impl DeterministicStateMachine for StateMachine {
             LedgerCommandType::ReleaseUtxo => {
                 let outpoint = OutPoint::from_canonical_string(&command.partition_key)?;
 
-                let utxo = state.utxos.iter_mut().find(|u| u.outpoint == outpoint)
+                let utxo = state
+                    .utxos
+                    .iter_mut()
+                    .find(|u| u.outpoint == outpoint)
                     .ok_or_else(|| LedgerError::UtxoNotFound {
                         txid: outpoint.txid.clone(),
                         vout: outpoint.vout,
@@ -748,7 +785,10 @@ impl DeterministicStateMachine for StateMachine {
                     Some(command.authorization_commitment.clone())
                 };
 
-                let utxo = state.utxos.iter_mut().find(|u| u.outpoint == outpoint)
+                let utxo = state
+                    .utxos
+                    .iter_mut()
+                    .find(|u| u.outpoint == outpoint)
                     .ok_or_else(|| LedgerError::UtxoNotFound {
                         txid: outpoint.txid.clone(),
                         vout: outpoint.vout,
@@ -766,9 +806,9 @@ impl DeterministicStateMachine for StateMachine {
             }
             LedgerCommandType::ApplyChainReorganization => {
                 let payload: ReorgPayload = serde_json::from_str(&command.authorization_commitment)
-                    .map_err(|e| LedgerError::InvalidUtxoData(format!(
-                        "invalid ReorgPayload: {}", e
-                    )))?;
+                    .map_err(|e| {
+                        LedgerError::InvalidUtxoData(format!("invalid ReorgPayload: {}", e))
+                    })?;
 
                 let _affected = ReorgHandler::apply_reorg(
                     &mut state.utxos,
@@ -845,11 +885,7 @@ mod tests {
         MembershipView::single_node("cluster-1", "node-1")
     }
 
-    fn credit_cmd(
-        account_id: &str,
-        amount: u64,
-        expected_version: u64,
-    ) -> LedgerCommand {
+    fn credit_cmd(account_id: &str, amount: u64, expected_version: u64) -> LedgerCommand {
         LedgerCommand::new(
             format!("credit-{}-{}", account_id, amount),
             LedgerCommandType::CreditInternalBalance,
@@ -861,11 +897,7 @@ mod tests {
         )
     }
 
-    fn debit_cmd(
-        account_id: &str,
-        amount: u64,
-        expected_version: u64,
-    ) -> LedgerCommand {
+    fn debit_cmd(account_id: &str, amount: u64, expected_version: u64) -> LedgerCommand {
         LedgerCommand::new(
             format!("debit-{}-{}", account_id, amount),
             LedgerCommandType::DebitInternalBalance,
@@ -877,11 +909,7 @@ mod tests {
         )
     }
 
-    fn reserve_cmd(
-        account_id: &str,
-        amount: u64,
-        expected_version: u64,
-    ) -> LedgerCommand {
+    fn reserve_cmd(account_id: &str, amount: u64, expected_version: u64) -> LedgerCommand {
         LedgerCommand::new(
             format!("reserve-{}-{}", account_id, amount),
             LedgerCommandType::ReserveBalance,
@@ -893,11 +921,7 @@ mod tests {
         )
     }
 
-    fn release_cmd(
-        account_id: &str,
-        amount: u64,
-        expected_version: u64,
-    ) -> LedgerCommand {
+    fn release_cmd(account_id: &str, amount: u64, expected_version: u64) -> LedgerCommand {
         LedgerCommand::new(
             format!("release-{}-{}", account_id, amount),
             LedgerCommandType::ReleaseReservation,
@@ -909,11 +933,7 @@ mod tests {
         )
     }
 
-    fn transfer_cmd(
-        source: &str,
-        dest: &str,
-        amount: u64,
-    ) -> LedgerCommand {
+    fn transfer_cmd(source: &str, dest: &str, amount: u64) -> LedgerCommand {
         LedgerCommand::new(
             format!("transfer-{}-{}-{}", source, dest, amount),
             LedgerCommandType::CommitInternalTransfer,
@@ -959,7 +979,9 @@ mod tests {
         let mut state = LedgerState::empty(test_membership());
 
         sm.apply(&mut state, &credit_cmd("carol", 50, 0)).unwrap();
-        let err = sm.apply(&mut state, &debit_cmd("carol", 100, 1)).unwrap_err();
+        let err = sm
+            .apply(&mut state, &debit_cmd("carol", 100, 1))
+            .unwrap_err();
         assert!(matches!(err, LedgerError::InsufficientFunds { .. }));
         // State unchanged
         assert_eq!(state.version, 1);
@@ -993,7 +1015,9 @@ mod tests {
         sm.apply(&mut state, &credit_cmd("alice", 1000, 0)).unwrap();
         sm.apply(&mut state, &credit_cmd("bob", 500, 0)).unwrap();
 
-        let receipt = sm.apply(&mut state, &transfer_cmd("alice", "bob", 300)).unwrap();
+        let receipt = sm
+            .apply(&mut state, &transfer_cmd("alice", "bob", 300))
+            .unwrap();
 
         assert_eq!(receipt.sequence, 2);
         let alice = state.find_account("alice").unwrap();
@@ -1075,7 +1099,10 @@ mod tests {
         sm.apply(&mut state, &credit_cmd("alice", 100, 0)).unwrap();
         let root_after = compute_state_root(&state);
 
-        assert_ne!(root_before, root_after, "state root must change after mutation");
+        assert_ne!(
+            root_before, root_after,
+            "state root must change after mutation"
+        );
     }
 
     #[test]
@@ -1085,7 +1112,9 @@ mod tests {
 
         sm.apply(&mut state, &credit_cmd("alice", 100, 0)).unwrap();
         // Try with wrong version
-        let err = sm.apply(&mut state, &credit_cmd("alice", 50, 0)).unwrap_err();
+        let err = sm
+            .apply(&mut state, &credit_cmd("alice", 50, 0))
+            .unwrap_err();
         assert!(matches!(err, LedgerError::VersionConflict { .. }));
 
         // Correct version works
@@ -1125,7 +1154,9 @@ mod tests {
 
         sm.apply(&mut state, &cmd).unwrap();
         assert_eq!(state.consumed_intents.len(), 1);
-        assert!(state.consumed_intents.contains(&"intent-id-123".to_string()));
+        assert!(state
+            .consumed_intents
+            .contains(&"intent-id-123".to_string()));
 
         // Applying same intent again (idempotent)
         sm.apply(&mut state, &cmd).unwrap();
@@ -1152,7 +1183,10 @@ mod tests {
             100,
         );
         sm.apply(&mut state, &add_cmd).unwrap();
-        assert!(state.membership.nodes.contains(&"observer-node-1".to_string()));
+        assert!(state
+            .membership
+            .nodes
+            .contains(&"observer-node-1".to_string()));
 
         // Remove node
         let remove_cmd = LedgerCommand::new(
@@ -1165,7 +1199,10 @@ mod tests {
             100,
         );
         sm.apply(&mut state, &remove_cmd).unwrap();
-        assert!(!state.membership.nodes.contains(&"observer-node-1".to_string()));
+        assert!(!state
+            .membership
+            .nodes
+            .contains(&"observer-node-1".to_string()));
     }
 
     #[test]
@@ -1210,9 +1247,6 @@ mod tests {
             1,
             100,
         );
-        assert_ne!(
-            cmd.compute_payload_hash(),
-            cmd3.compute_payload_hash()
-        );
+        assert_ne!(cmd.compute_payload_hash(), cmd3.compute_payload_hash());
     }
 }

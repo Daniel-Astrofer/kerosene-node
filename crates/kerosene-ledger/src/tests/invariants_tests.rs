@@ -71,9 +71,7 @@ fn test_onchain_reserved_exceeds_confirmed_fails() {
 
 #[test]
 fn test_pending_outgoing_not_exceed_available_passes() {
-    assert!(
-        check_pending_outgoing_not_exceed_available(&valid_view()).is_ok()
-    );
+    assert!(check_pending_outgoing_not_exceed_available(&valid_view()).is_ok());
 }
 
 #[test]

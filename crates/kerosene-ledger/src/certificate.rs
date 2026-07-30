@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::LedgerError;
 use crate::state_machine::LedgerState;
@@ -8,13 +11,15 @@ use crate::state_root::compute_state_root;
 // NodeSignature
 // ---------------------------------------------------------------------------
 
-/// A single node's signature over a commit certificate.
+/// A single node's Ed25519 signature over a commit certificate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeSignature {
     /// The node that produced this signature.
     pub node_id: String,
-    /// Hex-encoded signature (e.g. BLS or ECDSA signature).
+    /// Hex-encoded Ed25519 signature.
     pub signature_hex: String,
+    /// Hex-encoded Ed25519 public key of the signer (verification key).
+    pub public_key_hex: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +64,7 @@ impl QuorumCertificate {
         resulting_state_root: impl Into<String>,
         node_id: impl Into<String>,
         signature_hex: impl Into<String>,
+        public_key_hex: impl Into<String>,
     ) -> Self {
         Self {
             cluster_id: cluster_id.into(),
@@ -72,8 +78,30 @@ impl QuorumCertificate {
             signatures: vec![NodeSignature {
                 node_id: node_id.into(),
                 signature_hex: signature_hex.into(),
+                public_key_hex: public_key_hex.into(),
             }],
         }
+    }
+
+    /// Returns a canonical message to sign: domain-separated hash of
+    /// the certificate's core fields (excluding the signatures themselves).
+    ///
+    /// The message binds together:
+    /// - cluster_id, epoch, view, sequence
+    /// - command_hash, previous_state_root, resulting_state_root
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"KEROSENE_QC_v1");
+        hasher.update(b":");
+        hasher.update(self.cluster_id.as_bytes());
+        hasher.update(b":");
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.view.to_le_bytes());
+        hasher.update(self.sequence.to_le_bytes());
+        hasher.update(self.command_hash.as_bytes());
+        hasher.update(self.previous_state_root.as_bytes());
+        hasher.update(self.resulting_state_root.as_bytes());
+        hasher.finalize().to_vec()
     }
 
     /// Returns the number of distinct signers.
@@ -81,14 +109,18 @@ impl QuorumCertificate {
         self.signatures.len()
     }
 
-    /// Verifies structural integrity of the quorum certificate.
+    /// Verifies structural integrity AND Ed25519 cryptographic signatures
+    /// of the quorum certificate.
     ///
-    /// Checks:
-    /// - Signer bitmap length matches expected
-    /// - Signature count matches bitmap
+    /// Structural checks:
     /// - State roots are non-empty
+    /// - Command hash is non-empty
+    /// - Signatures exist with non-empty public keys
     ///
-    /// Does NOT verify cryptographic signatures (delegated to a crypto layer).
+    /// Cryptographic check:
+    /// - Every embedded Ed25519 signature is verified against the canonical
+    ///   signing message using the embedded public key.
+    /// - A certificate with a fake/forged signature is REJECTED.
     pub fn verify_basic(&self) -> Result<(), LedgerError> {
         if self.previous_state_root.is_empty() {
             return Err(LedgerError::InvalidSignature(
@@ -115,6 +147,148 @@ impl QuorumCertificate {
                 "signer_bitmap is empty".into(),
             ));
         }
+
+        let message = self.signing_message();
+        for sig in &self.signatures {
+            if sig.public_key_hex.is_empty() {
+                return Err(LedgerError::InvalidSignature(format!(
+                    "signature from node '{}' has empty public_key_hex",
+                    sig.node_id
+                )));
+            }
+            if sig.signature_hex.is_empty() {
+                return Err(LedgerError::InvalidSignature(format!(
+                    "signature from node '{}' has empty signature_hex",
+                    sig.node_id
+                )));
+            }
+
+            // Decode the hex public key
+            let pk_bytes = hex::decode(&sig.public_key_hex).map_err(|_| {
+                LedgerError::InvalidSignature(format!(
+                    "invalid hex public key for node '{}'",
+                    sig.node_id
+                ))
+            })?;
+            let public_key =
+                ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes.try_into().map_err(|_| {
+                    LedgerError::InvalidSignature(format!(
+                        "invalid Ed25519 public key length for node '{}'",
+                        sig.node_id
+                    ))
+                })?)
+                .map_err(|e| {
+                    LedgerError::InvalidSignature(format!(
+                        "invalid Ed25519 public key for node '{}': {}",
+                        sig.node_id, e
+                    ))
+                })?;
+
+            // Decode the hex signature
+            let sig_bytes = hex::decode(&sig.signature_hex).map_err(|_| {
+                LedgerError::InvalidSignature(format!(
+                    "invalid hex signature for node '{}'",
+                    sig.node_id
+                ))
+            })?;
+            let signature =
+                ed25519_dalek::Signature::from_bytes(&sig_bytes.try_into().map_err(|_| {
+                    LedgerError::InvalidSignature(format!(
+                        "invalid Ed25519 signature length for node '{}'",
+                        sig.node_id
+                    ))
+                })?);
+
+            // Verify the signature against the canonical signing message
+            use ed25519_dalek::Verifier;
+            public_key.verify(&message, &signature).map_err(|_| {
+                LedgerError::InvalidSignature(format!(
+                    "invalid Ed25519 signature from node '{}'",
+                    sig.node_id
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Verifies ALL Ed25519 cryptographic signatures in the quorum certificate.
+    ///
+    /// Requires a map of `node_id -> public_key_hex` for all signers.
+    /// Returns an error if ANY signature is invalid or does not match
+    /// the expected signing message.
+    ///
+    /// The signing message is the canonical `signing_message()` output.
+    /// A certificate with a fake/forged signature is REJECTED.
+    pub fn verify_crypto(&self, public_keys: &HashMap<String, String>) -> Result<(), LedgerError> {
+        // Basic structural check first
+        self.verify_basic()?;
+
+        let message = self.signing_message();
+
+        for sig in &self.signatures {
+            // Look up the public key for this signer
+            let pk_hex = public_keys.get(&sig.node_id).ok_or_else(|| {
+                LedgerError::InvalidSignature(format!(
+                    "unknown signer node '{}': no public key provided",
+                    sig.node_id
+                ))
+            })?;
+
+            // Verify the provided public_key_hex matches the registry
+            if pk_hex != &sig.public_key_hex {
+                return Err(LedgerError::InvalidSignature(format!(
+                    "public key mismatch for node '{}': expected {}, got {}",
+                    sig.node_id, pk_hex, sig.public_key_hex
+                )));
+            }
+
+            // Decode the public key
+            let pk_bytes = hex::decode(pk_hex).map_err(|_| {
+                LedgerError::InvalidSignature(format!(
+                    "invalid hex public key for node '{}'",
+                    sig.node_id
+                ))
+            })?;
+            let public_key =
+                ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes.try_into().map_err(|_| {
+                    LedgerError::InvalidSignature(format!(
+                        "invalid Ed25519 public key length for node '{}'",
+                        sig.node_id
+                    ))
+                })?)
+                .map_err(|e| {
+                    LedgerError::InvalidSignature(format!(
+                        "invalid Ed25519 public key for node '{}': {}",
+                        sig.node_id, e
+                    ))
+                })?;
+
+            // Decode the signature
+            let sig_bytes = hex::decode(&sig.signature_hex).map_err(|_| {
+                LedgerError::InvalidSignature(format!(
+                    "invalid hex signature for node '{}'",
+                    sig.node_id
+                ))
+            })?;
+            let signature =
+                ed25519_dalek::Signature::from_bytes(&sig_bytes.try_into().map_err(|_| {
+                    LedgerError::InvalidSignature(format!(
+                        "invalid Ed25519 signature length for node '{}'",
+                        sig.node_id
+                    ))
+                })?);
+
+            // Verify the signature against the signing message
+            use ed25519_dalek::Verifier;
+            public_key.verify(&message, &signature).map_err(|_| {
+                LedgerError::InvalidSignature(format!(
+                    "invalid Ed25519 signature from node '{}'",
+                    sig.node_id
+                ))
+            })?;
+        }
+
         Ok(())
     }
 }
@@ -268,8 +442,26 @@ mod tests {
         MembershipView::single_node("cluster-1", "node-1")
     }
 
+    // Generate a real Ed25519 keypair for testing
+    fn test_keypair() -> (ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey) {
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let verifying_key = signing_key.verifying_key();
+        (signing_key, verifying_key)
+    }
+
+    fn sign_message(signing_key: &ed25519_dalek::SigningKey, message: &[u8]) -> String {
+        use ed25519_dalek::Signer;
+        let signature = signing_key.sign(message);
+        hex::encode(signature.to_bytes())
+    }
+
     #[test]
     fn quorum_certificate_single_mode_creation() {
+        let (sk, vk) = test_keypair();
+        let pk_hex = hex::encode(vk.to_bytes());
+        let msg = b"test message";
+        let sig_hex = sign_message(&sk, msg);
+
         let qc = QuorumCertificate::single_node(
             "cluster-1",
             1,
@@ -279,7 +471,8 @@ mod tests {
             "prev-root",
             "result-root",
             "node-1",
-            "sig-hex-123",
+            &sig_hex,
+            &pk_hex,
         );
 
         assert_eq!(qc.cluster_id, "cluster-1");
@@ -288,15 +481,37 @@ mod tests {
         assert_eq!(qc.command_hash, "cmd-hash-abc");
         assert_eq!(qc.signer_count(), 1);
         assert_eq!(qc.signatures[0].node_id, "node-1");
-        assert_eq!(qc.signatures[0].signature_hex, "sig-hex-123");
+        assert_eq!(qc.signatures[0].public_key_hex, pk_hex);
         assert_eq!(qc.signer_bitmap, vec![0b0000_0001]);
     }
 
     #[test]
     fn quorum_certificate_basic_verification_passes() {
-        let qc = QuorumCertificate::single_node(
-            "cluster-1", 1, 0, 42, "hash", "prev-root", "result-root", "node-1", "sig",
+        let (sk, vk) = test_keypair();
+        let pk_hex = hex::encode(vk.to_bytes());
+        let qc_stub = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev-root",
+            "result-root",
+            "node-1",
+            "",
+            &pk_hex,
         );
+        let msg = qc_stub.signing_message();
+        let sig_hex = sign_message(&sk, &msg);
+        let qc = QuorumCertificate {
+            signer_bitmap: vec![0b0000_0001],
+            signatures: vec![NodeSignature {
+                node_id: "node-1".into(),
+                signature_hex: sig_hex,
+                public_key_hex: pk_hex,
+            }],
+            ..qc_stub
+        };
         assert!(qc.verify_basic().is_ok());
     }
 
@@ -305,7 +520,16 @@ mod tests {
         let qc = QuorumCertificate {
             previous_state_root: String::new(),
             ..QuorumCertificate::single_node(
-                "cluster-1", 1, 0, 42, "hash", "prev-root", "result-root", "node-1", "sig",
+                "cluster-1",
+                1,
+                0,
+                42,
+                "hash",
+                "prev-root",
+                "result-root",
+                "node-1",
+                "sig",
+                "pk",
             )
         };
         assert!(qc.verify_basic().is_err());
@@ -316,7 +540,16 @@ mod tests {
         let qc = QuorumCertificate {
             signatures: vec![],
             ..QuorumCertificate::single_node(
-                "cluster-1", 1, 0, 42, "hash", "prev-root", "result-root", "node-1", "sig",
+                "cluster-1",
+                1,
+                0,
+                42,
+                "hash",
+                "prev-root",
+                "result-root",
+                "node-1",
+                "sig",
+                "pk",
             )
         };
         assert!(qc.verify_basic().is_err());
@@ -325,11 +558,190 @@ mod tests {
     #[test]
     fn quorum_certificate_serde_roundtrip() {
         let qc = QuorumCertificate::single_node(
-            "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            "sig",
+            "pk",
         );
         let json = serde_json::to_string(&qc).unwrap();
         let deserialized: QuorumCertificate = serde_json::from_str(&json).unwrap();
         assert_eq!(qc, deserialized);
+    }
+
+    #[test]
+    fn real_ed25519_signature_verification_passes() {
+        let (sk, vk) = test_keypair();
+        let pk_hex = hex::encode(vk.to_bytes());
+
+        // Create QC with a proper signing message
+        let qc = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "cmd-hash",
+            "prev-root",
+            "result-root",
+            "node-1",
+            "",
+            &pk_hex,
+        );
+
+        // Now sign the actual signing message
+        let msg = qc.signing_message();
+        let sig_hex = sign_message(&sk, &msg);
+
+        // Create the real QC with the correct signature
+        let qc = QuorumCertificate {
+            signatures: vec![NodeSignature {
+                node_id: "node-1".into(),
+                signature_hex: sig_hex,
+                public_key_hex: pk_hex.clone(),
+            }],
+            ..qc
+        };
+
+        let mut public_keys = HashMap::new();
+        public_keys.insert("node-1".to_string(), pk_hex);
+
+        assert!(qc.verify_crypto(&public_keys).is_ok());
+    }
+
+    #[test]
+    fn fake_signature_is_rejected() {
+        let (_, vk) = test_keypair();
+        let pk_hex = hex::encode(vk.to_bytes());
+
+        let qc = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "cmd-hash",
+            "prev-root",
+            "result-root",
+            "node-1",
+            "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            &pk_hex,
+        );
+
+        let mut public_keys = HashMap::new();
+        public_keys.insert("node-1".to_string(), pk_hex);
+
+        let err = qc.verify_crypto(&public_keys);
+        assert!(err.is_err(), "fake signature must be rejected");
+        if let Err(LedgerError::InvalidSignature(msg)) = err {
+            assert!(
+                msg.contains("invalid Ed25519 signature"),
+                "error must mention invalid signature: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_signer_is_rejected() {
+        let qc = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "cmd-hash",
+            "prev-root",
+            "result-root",
+            "unknown-node",
+            "sig",
+            "pk",
+        );
+
+        let public_keys = HashMap::new(); // empty
+        let err = qc.verify_crypto(&public_keys);
+        assert!(err.is_err(), "unknown signer must be rejected");
+    }
+
+    #[test]
+    fn public_key_mismatch_is_rejected() {
+        let qc = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "cmd-hash",
+            "prev-root",
+            "result-root",
+            "node-1",
+            "sig",
+            "pk-in-cert",
+        );
+
+        let mut public_keys = HashMap::new();
+        public_keys.insert("node-1".to_string(), "pk-in-registry".to_string());
+
+        let err = qc.verify_crypto(&public_keys);
+        assert!(err.is_err(), "public key mismatch must be rejected");
+    }
+
+    #[test]
+    fn signing_message_is_deterministic() {
+        let qc1 = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            "sig",
+            "pk",
+        );
+        let qc2 = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            "sig",
+            "pk",
+        );
+        assert_eq!(qc1.signing_message(), qc2.signing_message());
+    }
+
+    #[test]
+    fn signing_message_differs_on_different_fields() {
+        let qc1 = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            "sig",
+            "pk",
+        );
+        let qc2 = QuorumCertificate::single_node(
+            "cluster-2",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            "sig",
+            "pk",
+        );
+        assert_ne!(qc1.signing_message(), qc2.signing_message());
     }
 
     #[test]
@@ -363,14 +775,30 @@ mod tests {
         let cp = Checkpoint::from_state(&state, 100, None);
 
         // Modify the state
-        state.accounts.push(crate::account_state::AccountState::new("alice"));
+        state
+            .accounts
+            .push(crate::account_state::AccountState::new("alice"));
         assert!(cp.verify(&state).is_err());
     }
 
     #[test]
     fn certified_snapshot_serde_roundtrip() {
+        let (sk, vk) = test_keypair();
+        let pk_hex = hex::encode(vk.to_bytes());
+        let msg = b"test snapshot QC";
+        let sig_hex = sign_message(&sk, msg);
+
         let qc = QuorumCertificate::single_node(
-            "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            &sig_hex,
+            &pk_hex,
         );
 
         let state = LedgerState::empty(test_membership());
@@ -398,8 +826,35 @@ mod tests {
 
     #[test]
     fn certified_snapshot_basic_verification_passes() {
+        let (sk, vk) = test_keypair();
+        let pk_hex = hex::encode(vk.to_bytes());
+
+        // Create stub QC, sign its canonical signing message, then rebuild
+        let qc_stub = QuorumCertificate::single_node(
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            "",
+            &pk_hex,
+        );
+        let msg = qc_stub.signing_message();
+        let sig_hex = sign_message(&sk, &msg);
         let qc = QuorumCertificate::single_node(
-            "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            &sig_hex,
+            &pk_hex,
         );
 
         let snapshot = CertifiedSnapshot {
@@ -422,8 +877,22 @@ mod tests {
 
     #[test]
     fn certified_snapshot_empty_state_bytes_fails() {
+        let (sk, vk) = test_keypair();
+        let pk_hex = hex::encode(vk.to_bytes());
+        let msg = b"test snapshot empty QC";
+        let sig_hex = sign_message(&sk, msg);
+
         let qc = QuorumCertificate::single_node(
-            "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
+            "cluster-1",
+            1,
+            0,
+            42,
+            "hash",
+            "prev",
+            "result",
+            "node-1",
+            &sig_hex,
+            &pk_hex,
         );
 
         let snapshot = CertifiedSnapshot {

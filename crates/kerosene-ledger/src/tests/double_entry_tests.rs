@@ -28,6 +28,7 @@ fn genesis_entry(sequence: u64) -> JournalEntry {
 fn finalize_entry(mut entry: JournalEntry, prev_hash: Option<&str>) -> JournalEntry {
     entry.previous_entry_hash = prev_hash.map(|s| s.to_string());
     entry.entry_hash = JournalEntry::compute_entry_hash(
+        &entry.entry_id,
         entry.sequence,
         &entry.description,
         &entry.debits,
@@ -65,10 +66,7 @@ async fn test_post_two_entries_chains_hashes() {
     let r1 = ledger.post_entry(e1).await.unwrap();
 
     assert_eq!(r1.sequence, 1);
-    assert_eq!(
-        r1.previous_entry_hash,
-        Some(r0.entry_hash.clone())
-    );
+    assert_eq!(r1.previous_entry_hash, Some(r0.entry_hash.clone()));
     assert_ne!(r0.entry_hash, r1.entry_hash);
 }
 
@@ -78,7 +76,13 @@ async fn test_sequence_gap_detected() {
     let entry = finalize_entry(genesis_entry(5), None); // sequence 5, but expected 0
     let err = ledger.post_entry(entry).await.unwrap_err();
     assert!(
-        matches!(err, LedgerError::SequenceGap { expected: 0, got: 5 }),
+        matches!(
+            err,
+            LedgerError::SequenceGap {
+                expected: 0,
+                got: 5
+            }
+        ),
         "expected SequenceGap(0,5), got {err:?}"
     );
 }
@@ -116,7 +120,7 @@ async fn test_unbalanced_entry_rejected() {
             amount_sats: 500, // 500 != 1000
         }],
         timestamp_bucket: 0,
-        entry_hash: JournalEntry::compute_entry_hash(0, "unbalanced", &[], &[], 0, None),
+        entry_hash: JournalEntry::compute_entry_hash("unbalanced-test", 0, "unbalanced", &[], &[], 0, None),
         previous_entry_hash: None,
     };
     let err = ledger.post_entry(entry).await.unwrap_err();
@@ -144,6 +148,7 @@ async fn test_genesis_with_prev_hash_rejected() {
     let mut entry = genesis_entry(0);
     entry.previous_entry_hash = Some("some-prev-hash".into());
     entry.entry_hash = JournalEntry::compute_entry_hash(
+        "prev-hash-rejected",
         0,
         &entry.description,
         &entry.debits,
@@ -167,7 +172,15 @@ async fn test_non_genesis_without_prev_hash_rejected() {
 
     let mut e1 = genesis_entry(1);
     e1.previous_entry_hash = None;
-    e1.entry_hash = JournalEntry::compute_entry_hash(1, &e1.description, &e1.debits, &e1.credits, e1.timestamp_bucket, None);
+    e1.entry_hash = JournalEntry::compute_entry_hash(
+        &e1.entry_id,
+        1,
+        &e1.description,
+        &e1.debits,
+        &e1.credits,
+        e1.timestamp_bucket,
+        None,
+    );
 
     let err = ledger.post_entry(e1).await.unwrap_err();
     assert!(
@@ -246,12 +259,12 @@ async fn test_hash_chain_verifiable() {
     let r1 = ledger.post_entry(e1.clone()).await.unwrap();
 
     // Verify entry hashes are correct
-    let expected_hash_0 = JournalEntry::compute_entry_hash(
-        0, "genesis deposit", &e0.debits, &e0.credits, 1000, None,
-    );
+    let expected_hash_0 =
+        JournalEntry::compute_entry_hash("entry-0", 0, "genesis deposit", &e0.debits, &e0.credits, 1000, None);
     assert_eq!(r0.entry_hash, expected_hash_0);
 
     let expected_hash_1 = JournalEntry::compute_entry_hash(
+        "entry-1",
         1,
         "genesis deposit",
         &e1.debits,
@@ -418,6 +431,7 @@ async fn test_prev_hash_mismatch_rejected() {
     let mut e1 = genesis_entry(1);
     e1.previous_entry_hash = Some("wrong-prev-hash".into());
     e1.entry_hash = JournalEntry::compute_entry_hash(
+        &e1.entry_id,
         1,
         &e1.description,
         &e1.debits,

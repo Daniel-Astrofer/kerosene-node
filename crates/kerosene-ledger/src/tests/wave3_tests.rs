@@ -1,8 +1,9 @@
+use crate::tests::helpers::make_signed_qc;
 use crate::{
     compute_state_root, AccountState, CertifiedSnapshot, Checkpoint, ConsensusProfile,
     DeterministicStateMachine, InMemorySnapshotStore, LedgerCommand, LedgerCommandType,
-    LedgerState, MembershipView, NodeSignature, QuorumCertificate, SnapshotStore,
-    StateMachine, StateTransitionReceipt, LedgerError,
+    LedgerError, LedgerState, MembershipView, NodeSignature, QuorumCertificate, SnapshotStore,
+    StateMachine, StateTransitionReceipt,
 };
 
 // ---------------------------------------------------------------------------
@@ -15,6 +16,33 @@ fn test_membership() -> MembershipView {
 
 fn empty_state() -> LedgerState {
     LedgerState::empty(test_membership())
+}
+
+fn default_qc() -> QuorumCertificate {
+    make_signed_qc("cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1").0
+}
+
+fn make_qc(
+    cluster_id: &str,
+    epoch: u64,
+    view: u64,
+    sequence: u64,
+    command_hash: &str,
+    prev_root: &str,
+    result_root: &str,
+    node_id: &str,
+) -> QuorumCertificate {
+    make_signed_qc(
+        cluster_id,
+        epoch,
+        view,
+        sequence,
+        command_hash,
+        prev_root,
+        result_root,
+        node_id,
+    )
+    .0
 }
 
 fn credit_cmd(account_id: &str, amount: u64, expected_version: u64) -> LedgerCommand {
@@ -77,7 +105,6 @@ fn transfer_cmd(source: &str, dest: &str, amount: u64) -> LedgerCommand {
     )
 }
 
-
 // ===========================================================================
 // State machine tests
 // ===========================================================================
@@ -118,7 +145,9 @@ fn debit_with_insufficient_funds_returns_error() {
     let mut state = empty_state();
 
     sm.apply(&mut state, &credit_cmd("carol", 50, 0)).unwrap();
-    let err = sm.apply(&mut state, &debit_cmd("carol", 100, 1)).unwrap_err();
+    let err = sm
+        .apply(&mut state, &debit_cmd("carol", 100, 1))
+        .unwrap_err();
     assert!(matches!(err, LedgerError::InsufficientFunds { .. }));
 
     // State must be unchanged
@@ -153,7 +182,9 @@ fn reserve_fails_when_insufficient_funds() {
     let mut state = empty_state();
 
     sm.apply(&mut state, &credit_cmd("eve", 100, 0)).unwrap();
-    let err = sm.apply(&mut state, &reserve_cmd("eve", 200, 1)).unwrap_err();
+    let err = sm
+        .apply(&mut state, &reserve_cmd("eve", 200, 1))
+        .unwrap_err();
     assert!(matches!(err, LedgerError::InsufficientFunds { .. }));
 }
 
@@ -165,7 +196,9 @@ fn atomic_transfer_succeeds_with_valid_versions() {
     sm.apply(&mut state, &credit_cmd("alice", 1000, 0)).unwrap();
     sm.apply(&mut state, &credit_cmd("bob", 500, 0)).unwrap();
 
-    let receipt = sm.apply(&mut state, &transfer_cmd("alice", "bob", 300)).unwrap();
+    let receipt = sm
+        .apply(&mut state, &transfer_cmd("alice", "bob", 300))
+        .unwrap();
 
     assert_eq!(receipt.sequence, 2);
 
@@ -185,7 +218,9 @@ fn atomic_transfer_fails_on_insufficient_source_balance() {
     sm.apply(&mut state, &credit_cmd("alice", 100, 0)).unwrap();
     sm.apply(&mut state, &credit_cmd("bob", 500, 0)).unwrap();
 
-    let err = sm.apply(&mut state, &transfer_cmd("alice", "bob", 300)).unwrap_err();
+    let err = sm
+        .apply(&mut state, &transfer_cmd("alice", "bob", 300))
+        .unwrap_err();
     assert!(matches!(err, LedgerError::InsufficientFunds { .. }));
 
     // Verify no partial state change
@@ -226,7 +261,8 @@ fn state_root_is_deterministic_same_commands_same_root() {
         sm.apply(&mut state, &credit_cmd("alice", 100, 0)).unwrap();
         sm.apply(&mut state, &credit_cmd("bob", 200, 0)).unwrap();
         sm.apply(&mut state, &debit_cmd("alice", 30, 1)).unwrap();
-        sm.apply(&mut state, &transfer_cmd("bob", "alice", 50)).unwrap();
+        sm.apply(&mut state, &transfer_cmd("bob", "alice", 50))
+            .unwrap();
         state
     }
 
@@ -244,7 +280,10 @@ fn state_root_changes_after_applying_command() {
     sm.apply(&mut state, &credit_cmd("alice", 100, 0)).unwrap();
     let root_after = compute_state_root(&state);
 
-    assert_ne!(root_before, root_after, "state root must change after mutation");
+    assert_ne!(
+        root_before, root_after,
+        "state root must change after mutation"
+    );
 }
 
 #[test]
@@ -283,7 +322,9 @@ fn validate_without_mutation() {
     assert!(sm.validate(&state, &credit_cmd("alice", 100, 0)).is_ok());
 
     // Invalid: debit from non-existent account should fail
-    assert!(sm.validate(&state, &debit_cmd("nonexistent", 100, 0)).is_err());
+    assert!(sm
+        .validate(&state, &debit_cmd("nonexistent", 100, 0))
+        .is_err());
 }
 
 #[test]
@@ -385,14 +426,15 @@ fn different_state_produces_different_root() {
 fn quorum_certificate_creation_single_mode() {
     let qc = QuorumCertificate::single_node(
         "cluster-1",
-        1,    // epoch
-        0,    // view
-        42,   // sequence
+        1,  // epoch
+        0,  // view
+        42, // sequence
         "abc123",
         "prev-root",
         "result-root",
         "node-1",
         "deadbeef",
+        "",
     );
 
     assert_eq!(qc.cluster_id, "cluster-1");
@@ -411,7 +453,16 @@ fn quorum_certificate_creation_single_mode() {
 #[test]
 fn quorum_certificate_serde_roundtrip() {
     let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
+        "cluster-1",
+        1,
+        0,
+        42,
+        "hash",
+        "prev",
+        "result",
+        "node-1",
+        "sig",
+        "",
     );
     let json = serde_json::to_string(&qc).unwrap();
     let deserialized: QuorumCertificate = serde_json::from_str(&json).unwrap();
@@ -420,9 +471,7 @@ fn quorum_certificate_serde_roundtrip() {
 
 #[test]
 fn quorum_certificate_basic_verification() {
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
-    );
+    let qc = default_qc();
     assert!(qc.verify_basic().is_ok());
 }
 
@@ -430,9 +479,7 @@ fn quorum_certificate_basic_verification() {
 fn quorum_certificate_empty_roots_fail_verification() {
     let qc = QuorumCertificate {
         previous_state_root: String::new(),
-        ..QuorumCertificate::single_node(
-            "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
-        )
+        ..default_qc()
     };
     assert!(qc.verify_basic().is_err());
 }
@@ -474,7 +521,16 @@ fn checkpoint_verify_fails_on_tampered_state() {
 #[test]
 fn checkpoint_with_quorum_certificate() {
     let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 0, "hash", "prev", "result", "node-1", "sig",
+        "cluster-1",
+        1,
+        0,
+        0,
+        "hash",
+        "prev",
+        "result",
+        "node-1",
+        "sig",
+        "",
     );
     let state = empty_state();
     let cp = Checkpoint::from_state(&state, 100, Some(qc.clone()));
@@ -485,7 +541,16 @@ fn checkpoint_with_quorum_certificate() {
 #[test]
 fn certified_snapshot_serde_roundtrip() {
     let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1", "sig",
+        "cluster-1",
+        1,
+        0,
+        42,
+        "hash",
+        "prev",
+        "result",
+        "node-1",
+        "sig",
+        "",
     );
 
     let state = empty_state();
@@ -519,9 +584,7 @@ fn certified_snapshot_serde_roundtrip() {
 #[tokio::test]
 async fn snapshot_store_save_and_retrieve_latest() {
     let store = InMemorySnapshotStore::new();
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1", "sig",
-    );
+    let qc = make_qc("cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1");
 
     let state = empty_state();
     let state_root = compute_state_root(&state);
@@ -557,9 +620,7 @@ async fn snapshot_store_empty_returns_none() {
 #[tokio::test]
 async fn snapshot_store_get_by_sequence() {
     let store = InMemorySnapshotStore::new();
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1", "sig",
-    );
+    let qc = make_qc("cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1");
 
     let state = empty_state();
     let state_root = compute_state_root(&state);
@@ -588,9 +649,7 @@ async fn snapshot_store_get_by_sequence() {
 #[tokio::test]
 async fn snapshot_store_install_valid_snapshot() {
     let store = InMemorySnapshotStore::new();
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1", "sig",
-    );
+    let qc = make_qc("cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1");
 
     let state = empty_state();
     let state_root = compute_state_root(&state);
@@ -620,9 +679,7 @@ async fn snapshot_store_install_valid_snapshot() {
 #[tokio::test]
 async fn snapshot_store_install_tampered_snapshot_fails() {
     let store = InMemorySnapshotStore::new();
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1", "sig",
-    );
+    let qc = make_qc("cluster-1", 1, 0, 1, "hash", "prev", "result", "node-1");
 
     let state = empty_state();
     let state_bytes = serde_json::to_vec(&state).unwrap();
@@ -656,6 +713,7 @@ fn node_signature_creation() {
     let sig = NodeSignature {
         node_id: "node-42".into(),
         signature_hex: "abcdef0123456789".into(),
+        public_key_hex: "pk-placeholder".into(),
     };
     assert_eq!(sig.node_id, "node-42");
     assert_eq!(sig.signature_hex, "abcdef0123456789");
@@ -666,6 +724,7 @@ fn node_signature_serde_roundtrip() {
     let sig = NodeSignature {
         node_id: "node-1".into(),
         signature_hex: "deadbeef".into(),
+        public_key_hex: "pk-placeholder".into(),
     };
     let json = serde_json::to_string(&sig).unwrap();
     let deserialized: NodeSignature = serde_json::from_str(&json).unwrap();

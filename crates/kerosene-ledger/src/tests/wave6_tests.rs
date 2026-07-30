@@ -6,7 +6,10 @@ use crate::settlement::{
     SettlementValidator, VaultAuthorizationVerifier, VaultVerificationError,
 };
 use crate::state_machine::{LedgerState, MembershipView};
-use crate::withdrawal::{InMemoryWithdrawalStore, WithdrawalRecord, WithdrawalStatus, WithdrawalStore};
+use crate::tests::helpers::make_signed_qc;
+use crate::withdrawal::{
+    InMemoryWithdrawalStore, WithdrawalRecord, WithdrawalStatus, WithdrawalStore,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -17,9 +20,40 @@ fn test_membership() -> MembershipView {
 }
 
 fn test_qc() -> QuorumCertificate {
-    QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
+    make_signed_qc(
+        "cluster-1",
+        1,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
     )
+    .0
+}
+
+fn make_qc(
+    cluster_id: &str,
+    epoch: u64,
+    view: u64,
+    sequence: u64,
+    command_hash: &str,
+    prev_root: &str,
+    result_root: &str,
+    node_id: &str,
+) -> QuorumCertificate {
+    make_signed_qc(
+        cluster_id,
+        epoch,
+        view,
+        sequence,
+        command_hash,
+        prev_root,
+        result_root,
+        node_id,
+    )
+    .0
 }
 
 fn test_policy() -> SettlementPolicy {
@@ -133,18 +167,15 @@ fn is_expired_works_correctly() {
 #[test]
 fn verify_against_reservation_valid() {
     let auth = test_auth();
-    let reservation = Reservation::new(
-        "res-1", "account-1", 100_000, 50, 300, "intent-commit-1",
-    );
+    let reservation = Reservation::new("res-1", "account-1", 100_000, 50, 300, "intent-commit-1");
     assert!(auth.verify_against_reservation(&reservation).is_ok());
 }
 
 #[test]
 fn verify_against_reservation_rejects_terminal_reservation() {
     let auth = test_auth();
-    let mut reservation = Reservation::new(
-        "res-1", "account-1", 100_000, 50, 300, "intent-commit-1",
-    );
+    let mut reservation =
+        Reservation::new("res-1", "account-1", 100_000, 50, 300, "intent-commit-1");
     reservation.state = crate::reservation::ReservationState::Consumed;
     assert!(auth.verify_against_reservation(&reservation).is_err());
 }
@@ -153,7 +184,12 @@ fn verify_against_reservation_rejects_terminal_reservation() {
 fn verify_against_reservation_rejects_mismatched_commitment() {
     let auth = test_auth();
     let reservation = Reservation::new(
-        "res-1", "account-1", 100_000, 50, 300, "different-commitment",
+        "res-1",
+        "account-1",
+        100_000,
+        50,
+        300,
+        "different-commitment",
     );
     assert!(auth.verify_against_reservation(&reservation).is_err());
 }
@@ -339,8 +375,15 @@ fn validator_rejects_wrong_epoch() {
 #[test]
 fn validator_rejects_mismatched_qc_epoch() {
     let state = LedgerState::empty(test_membership());
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 99, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
+    let qc = make_qc(
+        "cluster-1",
+        99,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
     );
     let auth = SettlementAuthorization {
         epoch: 1,
@@ -407,7 +450,14 @@ fn vault_verifier_accepts_valid_auth() {
     let nonce_checker = test_sync_nonce_checker();
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 2, 3, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        2,
+        3,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
     assert!(result.is_ok(), "expected Ok, got {:?}", result);
 }
@@ -420,9 +470,19 @@ fn vault_verifier_psbt_hash_mismatch() {
     let nonce_checker = test_sync_nonce_checker();
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 2, 3, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        2,
+        3,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
-    assert!(matches!(result, Err(VaultVerificationError::PsbtMismatch { .. })));
+    assert!(matches!(
+        result,
+        Err(VaultVerificationError::PsbtMismatch { .. })
+    ));
 }
 
 #[test]
@@ -439,9 +499,19 @@ fn vault_verifier_nonce_consumed() {
     nonce_checker.mark_consumed_sync("used-nonce");
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 2, 3, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        2,
+        3,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
-    assert!(matches!(result, Err(VaultVerificationError::NonceReused(_))));
+    assert!(matches!(
+        result,
+        Err(VaultVerificationError::NonceReused(_))
+    ));
 }
 
 #[test]
@@ -457,9 +527,19 @@ fn vault_verifier_rejects_expired_auth() {
     let nonce_checker = test_sync_nonce_checker();
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 2, 3, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        2,
+        3,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
-    assert!(matches!(result, Err(VaultVerificationError::AuthorizationExpired { .. })));
+    assert!(matches!(
+        result,
+        Err(VaultVerificationError::AuthorizationExpired { .. })
+    ));
 }
 
 #[test]
@@ -475,7 +555,14 @@ fn vault_verifier_rejects_empty_nonce() {
     let nonce_checker = test_sync_nonce_checker();
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 2, 3, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        2,
+        3,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
     assert!(result.is_err());
 }
@@ -492,7 +579,14 @@ fn vault_verifier_rejects_zero_inputs() {
     let nonce_checker = test_sync_nonce_checker();
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 0, 2, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        0,
+        2,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
     assert!(result.is_err());
 }
@@ -509,7 +603,14 @@ fn vault_verifier_rejects_zero_outputs() {
     let nonce_checker = test_sync_nonce_checker();
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 2, 0, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        2,
+        0,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
     assert!(result.is_err());
 }
@@ -518,8 +619,15 @@ fn vault_verifier_rejects_zero_outputs() {
 fn vault_verifier_epoch_drift_exceeded() {
     let psbt_bytes = b"psbt";
     let psbt_hash = PsbtCommitment::compute(psbt_bytes);
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 100, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
+    let qc = make_qc(
+        "cluster-1",
+        100,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
     );
     let auth = SettlementAuthorization {
         psbt_commitment: psbt_hash,
@@ -534,9 +642,19 @@ fn vault_verifier_epoch_drift_exceeded() {
     let nonce_checker = test_sync_nonce_checker();
 
     let result = VaultAuthorizationVerifier::verify(
-        &auth, psbt_bytes, 2, 2, 1_000_000, &policy, &nonce_checker, 100,
+        &auth,
+        psbt_bytes,
+        2,
+        2,
+        1_000_000,
+        &policy,
+        &nonce_checker,
+        100,
     );
-    assert!(matches!(result, Err(VaultVerificationError::EpochExpired { .. })));
+    assert!(matches!(
+        result,
+        Err(VaultVerificationError::EpochExpired { .. })
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -560,11 +678,26 @@ async fn update_status_through_lifecycle() {
     store.create(wd).await.unwrap();
 
     // Reserved -> Authorized -> Signing -> Broadcast -> Confirming -> Confirmed
-    store.update_status("wd-lifecycle", WithdrawalStatus::Authorized, 110).await.unwrap();
-    store.update_status("wd-lifecycle", WithdrawalStatus::Signing, 120).await.unwrap();
-    store.update_status("wd-lifecycle", WithdrawalStatus::Broadcast, 130).await.unwrap();
-    store.update_status("wd-lifecycle", WithdrawalStatus::Confirming, 140).await.unwrap();
-    store.update_status("wd-lifecycle", WithdrawalStatus::Confirmed, 150).await.unwrap();
+    store
+        .update_status("wd-lifecycle", WithdrawalStatus::Authorized, 110)
+        .await
+        .unwrap();
+    store
+        .update_status("wd-lifecycle", WithdrawalStatus::Signing, 120)
+        .await
+        .unwrap();
+    store
+        .update_status("wd-lifecycle", WithdrawalStatus::Broadcast, 130)
+        .await
+        .unwrap();
+    store
+        .update_status("wd-lifecycle", WithdrawalStatus::Confirming, 140)
+        .await
+        .unwrap();
+    store
+        .update_status("wd-lifecycle", WithdrawalStatus::Confirmed, 150)
+        .await
+        .unwrap();
 
     let final_wd = store.get("wd-lifecycle").await.unwrap().unwrap();
     assert_eq!(final_wd.status, WithdrawalStatus::Confirmed);
@@ -578,7 +711,10 @@ async fn withdrawal_can_fail_from_any_non_terminal_state() {
     store.create(wd).await.unwrap();
 
     // Fail from Reserved
-    store.update_status("wd-fail", WithdrawalStatus::Failed, 110).await.unwrap();
+    store
+        .update_status("wd-fail", WithdrawalStatus::Failed, 110)
+        .await
+        .unwrap();
     let wd = store.get("wd-fail").await.unwrap().unwrap();
     assert_eq!(wd.status, WithdrawalStatus::Failed);
 }
@@ -589,10 +725,22 @@ async fn withdrawal_can_rbf_from_broadcast() {
     let wd = WithdrawalRecord::new("wd-rbf", "intent", "acc", 50_000, "addr", 100);
     store.create(wd).await.unwrap();
 
-    store.update_status("wd-rbf", WithdrawalStatus::Authorized, 110).await.unwrap();
-    store.update_status("wd-rbf", WithdrawalStatus::Signing, 120).await.unwrap();
-    store.update_status("wd-rbf", WithdrawalStatus::Broadcast, 130).await.unwrap();
-    store.update_status("wd-rbf", WithdrawalStatus::Replaced, 140).await.unwrap();
+    store
+        .update_status("wd-rbf", WithdrawalStatus::Authorized, 110)
+        .await
+        .unwrap();
+    store
+        .update_status("wd-rbf", WithdrawalStatus::Signing, 120)
+        .await
+        .unwrap();
+    store
+        .update_status("wd-rbf", WithdrawalStatus::Broadcast, 130)
+        .await
+        .unwrap();
+    store
+        .update_status("wd-rbf", WithdrawalStatus::Replaced, 140)
+        .await
+        .unwrap();
 
     let wd = store.get("wd-rbf").await.unwrap().unwrap();
     assert_eq!(wd.status, WithdrawalStatus::Replaced);
@@ -604,8 +752,15 @@ async fn withdrawal_set_authorization() {
     let wd = WithdrawalRecord::new("wd-auth", "intent", "acc", 50_000, "addr", 100);
     store.create(wd).await.unwrap();
 
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 10, "cmd-hash", "prev", "result", "node-1", "sig",
+    let qc = make_qc(
+        "cluster-1",
+        1,
+        0,
+        10,
+        "cmd-hash",
+        "prev",
+        "result",
+        "node-1",
     );
     let auth = SettlementAuthorization {
         intent_commitment: "intent-1".into(),
@@ -643,7 +798,10 @@ async fn withdrawal_set_broadcast_txid() {
     let wd = WithdrawalRecord::new("wd-txid", "intent", "acc", 50_000, "addr", 100);
     store.create(wd).await.unwrap();
 
-    store.set_broadcast_txid("wd-txid", "abcdef123456").await.unwrap();
+    store
+        .set_broadcast_txid("wd-txid", "abcdef123456")
+        .await
+        .unwrap();
     let retrieved = store.get("wd-txid").await.unwrap().unwrap();
     assert_eq!(retrieved.broadcast_txid, Some("abcdef123456".into()));
 }
@@ -654,9 +812,18 @@ async fn withdrawal_broadcast_txid_immutable() {
     let wd = WithdrawalRecord::new("wd-immutable", "intent", "acc", 50_000, "addr", 100);
     store.create(wd).await.unwrap();
 
-    store.set_broadcast_txid("wd-immutable", "txid-1").await.unwrap();
-    let err = store.set_broadcast_txid("wd-immutable", "txid-2").await.unwrap_err();
-    assert!(matches!(err, crate::error::LedgerError::InvalidStateTransition(_)));
+    store
+        .set_broadcast_txid("wd-immutable", "txid-1")
+        .await
+        .unwrap();
+    let err = store
+        .set_broadcast_txid("wd-immutable", "txid-2")
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        crate::error::LedgerError::InvalidStateTransition(_)
+    ));
 }
 
 #[tokio::test]

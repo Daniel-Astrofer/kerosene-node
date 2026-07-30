@@ -37,9 +37,7 @@ impl StandardAccount {
     /// Returns the accounting class for this standard account.
     pub fn class(&self) -> AccountClass {
         match self {
-            Self::AssetCustodiedBtc | Self::AssetColdBtc | Self::AssetHotBtc => {
-                AccountClass::Asset
-            }
+            Self::AssetCustodiedBtc | Self::AssetColdBtc | Self::AssetHotBtc => AccountClass::Asset,
             Self::LiabilityUserBalances
             | Self::LiabilityPendingWithdrawals
             | Self::LiabilityInternalReserved => AccountClass::Liability,
@@ -74,7 +72,10 @@ mod tests {
             StandardAccount::LiabilityInternalReserved.class(),
             AccountClass::Liability
         );
-        assert_eq!(StandardAccount::EquityPlatform.class(), AccountClass::Equity);
+        assert_eq!(
+            StandardAccount::EquityPlatform.class(),
+            AccountClass::Equity
+        );
         assert_eq!(
             StandardAccount::ExpenseMinerFees.class(),
             AccountClass::Expense

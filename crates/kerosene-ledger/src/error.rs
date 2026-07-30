@@ -33,9 +33,7 @@ pub enum LedgerError {
     #[error("reserved {reserved} exceeds available {available}")]
     ReservedExceedsAvailable { reserved: u64, available: u64 },
 
-    #[error(
-        "pending outgoing {outgoing} exceeds internal available {available}"
-    )]
+    #[error("pending outgoing {outgoing} exceeds internal available {available}")]
     PendingOutgoingExceedsAvailable { outgoing: u64, available: u64 },
 
     #[error("state version regression: previous {prev}, current {current}")]
@@ -50,7 +48,6 @@ pub enum LedgerError {
     // -----------------------------------------------------------------------
     // Wave 2 — Optimistic versioning, atomic reservations, durable idempotency
     // -----------------------------------------------------------------------
-
     #[error("version conflict: account {account} expected version {expected}, current {current}")]
     VersionConflict {
         account: String,
@@ -83,7 +80,6 @@ pub enum LedgerError {
     // -----------------------------------------------------------------------
     // Wave 3 — Deterministic state machine, state roots, certificates
     // -----------------------------------------------------------------------
-
     #[error("unknown command type: {0}")]
     UnknownCommand(String),
 
@@ -102,7 +98,6 @@ pub enum LedgerError {
     // -----------------------------------------------------------------------
     // Wave 4 — Ordered replication, sync status, node recovery & membership
     // -----------------------------------------------------------------------
-
     #[error("sync not healthy: {0}")]
     SyncNotHealthy(String),
 
@@ -127,7 +122,6 @@ pub enum LedgerError {
     // -----------------------------------------------------------------------
     // Wave 5 — UTXOs, chain observer, RBF, reorganizations
     // -----------------------------------------------------------------------
-
     #[error("utxo not found: {txid}:{vout}")]
     UtxoNotFound { txid: String, vout: u32 },
 
@@ -149,7 +143,6 @@ pub enum LedgerError {
     // -----------------------------------------------------------------------
     // Wave 6 — Settlement authorization, PSBT binding, vault validation
     // -----------------------------------------------------------------------
-
     #[error("authorization expired at {expires_at}, current time {now}")]
     AuthorizationExpired { expires_at: u64, now: u64 },
 
@@ -168,7 +161,6 @@ pub enum LedgerError {
     // -----------------------------------------------------------------------
     // Wave 7 — Reconciliation, metrics, production gates
     // -----------------------------------------------------------------------
-
     #[error("gate blocked: {reason}")]
     GateBlocked { reason: String },
 }

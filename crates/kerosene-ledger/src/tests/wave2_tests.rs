@@ -1,8 +1,8 @@
 use crate::{
-    BalanceCommand, BalanceOperation, IdempotencyRecord,
+    BalanceCommand, BalanceOperation, IdempotencyRecord, IdempotencyStore,
     InMemoryIdempotencyStore, InMemoryReservationStore, InMemoryVersionedAccountStore,
-    InternalTransferCommand, Reservation, ReservationState, LedgerError,
-    IdempotencyStore, ReservationStore, VersionedAccountStore,
+    InternalTransferCommand, LedgerError, Reservation, ReservationState, ReservationStore,
+    VersionedAccountStore,
 };
 
 // ===========================================================================
@@ -50,10 +50,7 @@ async fn version_mismatch_returns_version_conflict() {
     // Try with wrong version
     let cmd = BalanceCommand::new("c2", "carol", 0, BalanceOperation::Debit, 10, 1);
     let err = store.apply_command(&cmd).await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::VersionConflict { .. }
-    ));
+    assert!(matches!(err, LedgerError::VersionConflict { .. }));
 
     // Try with correct version
     let cmd = BalanceCommand::new("c3", "carol", 1, BalanceOperation::Debit, 10, 1);
@@ -66,10 +63,7 @@ async fn version_mismatch_on_new_account_rejected() {
     // New account has version 0, so expected_version must be 0
     let cmd = BalanceCommand::new("c1", "dave", 1, BalanceOperation::Credit, 100, 1);
     let err = store.apply_command(&cmd).await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::VersionConflict { .. }
-    ));
+    assert!(matches!(err, LedgerError::VersionConflict { .. }));
 }
 
 // ===========================================================================
@@ -95,7 +89,11 @@ async fn reservation_create_to_committed_flow() {
 
     // Transition reservation to committed
     res_store
-        .transition("res-1", ReservationState::Prepared, ReservationState::Committed)
+        .transition(
+            "res-1",
+            ReservationState::Prepared,
+            ReservationState::Committed,
+        )
         .await
         .unwrap();
 
@@ -111,45 +109,80 @@ async fn reservation_create_to_committed_flow() {
 async fn reserved_amount_not_spendable() {
     let store = InMemoryVersionedAccountStore::new();
     store
-        .apply_command(&BalanceCommand::new("c1", "frank", 0, BalanceOperation::Credit, 200, 1))
+        .apply_command(&BalanceCommand::new(
+            "c1",
+            "frank",
+            0,
+            BalanceOperation::Credit,
+            200,
+            1,
+        ))
         .await
         .unwrap();
 
     // Reserve 150
     store
-        .apply_command(&BalanceCommand::new("c2", "frank", 1, BalanceOperation::Reserve, 150, 1))
+        .apply_command(&BalanceCommand::new(
+            "c2",
+            "frank",
+            1,
+            BalanceOperation::Reserve,
+            150,
+            1,
+        ))
         .await
         .unwrap();
 
     let state = store.get_account("frank").await.unwrap().unwrap();
     // After reserve(150) from 200: available=50, reserved=150
-    // spendable = available - reserved = 50 - 150 = 0 (saturated)
-    assert_eq!(state.spendable(), 0);
+    // spendable = available (reserved already excluded) = 50
+    assert_eq!(state.spendable(), 50);
 
-    // Trying to debit any positive amount should fail (no spendable balance)
+    // Trying to debit 1 sat should succeed (50 spendable)
     let cmd = BalanceCommand::new("c3", "frank", 2, BalanceOperation::Debit, 1, 1);
-    let err = store.apply_command(&cmd).await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::InsufficientFunds { .. }
-    ));
+    store.apply_command(&cmd).await.unwrap();
+    let state = store.get_account("frank").await.unwrap().unwrap();
+    assert_eq!(state.available_sats, 49);
+    assert_eq!(state.reserved_sats, 150);
+    assert_eq!(state.spendable(), 49);
 }
 
 #[tokio::test]
 async fn release_restores_available_balance() {
     let store = InMemoryVersionedAccountStore::new();
     store
-        .apply_command(&BalanceCommand::new("c1", "grace", 0, BalanceOperation::Credit, 300, 1))
+        .apply_command(&BalanceCommand::new(
+            "c1",
+            "grace",
+            0,
+            BalanceOperation::Credit,
+            300,
+            1,
+        ))
         .await
         .unwrap();
     store
-        .apply_command(&BalanceCommand::new("c2", "grace", 1, BalanceOperation::Reserve, 200, 1))
+        .apply_command(&BalanceCommand::new(
+            "c2",
+            "grace",
+            1,
+            BalanceOperation::Reserve,
+            200,
+            1,
+        ))
         .await
         .unwrap();
 
     // Release 100 back
     store
-        .apply_command(&BalanceCommand::new("c3", "grace", 2, BalanceOperation::ReleaseReservation, 100, 1))
+        .apply_command(&BalanceCommand::new(
+            "c3",
+            "grace",
+            2,
+            BalanceOperation::ReleaseReservation,
+            100,
+            1,
+        ))
         .await
         .unwrap();
 
@@ -164,11 +197,25 @@ async fn consume_reservation_zeros_out_reserved() {
     let res_store = InMemoryReservationStore::new();
 
     acc_store
-        .apply_command(&BalanceCommand::new("c1", "heidi", 0, BalanceOperation::Credit, 500, 1))
+        .apply_command(&BalanceCommand::new(
+            "c1",
+            "heidi",
+            0,
+            BalanceOperation::Credit,
+            500,
+            1,
+        ))
         .await
         .unwrap();
     acc_store
-        .apply_command(&BalanceCommand::new("c2", "heidi", 1, BalanceOperation::Reserve, 300, 1))
+        .apply_command(&BalanceCommand::new(
+            "c2",
+            "heidi",
+            1,
+            BalanceOperation::Reserve,
+            300,
+            1,
+        ))
         .await
         .unwrap();
     res_store
@@ -176,14 +223,22 @@ async fn consume_reservation_zeros_out_reserved() {
         .await
         .unwrap();
     res_store
-        .transition("res-1", ReservationState::Prepared, ReservationState::Committed)
+        .transition(
+            "res-1",
+            ReservationState::Prepared,
+            ReservationState::Committed,
+        )
         .await
         .unwrap();
 
     // Consume — external settlement succeeded
     // In practice this removes reserved without restoring available
     res_store
-        .transition("res-1", ReservationState::Committed, ReservationState::Consumed)
+        .transition(
+            "res-1",
+            ReservationState::Committed,
+            ReservationState::Consumed,
+        )
         .await
         .unwrap();
 
@@ -221,7 +276,11 @@ async fn expired_reservations_cannot_be_consumed() {
     // the application layer enforces this. Verify the reservation stays expired
     // after being marked.
     let _ = res_store
-        .transition("res-exp", ReservationState::Expired, ReservationState::Consumed)
+        .transition(
+            "res-exp",
+            ReservationState::Expired,
+            ReservationState::Consumed,
+        )
         .await;
     // Re-fetch: if allowed by store, verify state changed. If not, verify expired.
     let r = res_store.get_reservation("res-exp").await.unwrap().unwrap();
@@ -244,17 +303,21 @@ async fn reservation_exceeding_available_balance_rejected() {
     let acc_store = InMemoryVersionedAccountStore::new();
 
     acc_store
-        .apply_command(&BalanceCommand::new("c1", "ivan", 0, BalanceOperation::Credit, 100, 1))
+        .apply_command(&BalanceCommand::new(
+            "c1",
+            "ivan",
+            0,
+            BalanceOperation::Credit,
+            100,
+            1,
+        ))
         .await
         .unwrap();
 
     // Try to reserve more than spendable
     let cmd = BalanceCommand::new("c2", "ivan", 1, BalanceOperation::Reserve, 200, 1);
     let err = acc_store.apply_command(&cmd).await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::InsufficientFunds { .. }
-    ));
+    assert!(matches!(err, LedgerError::InsufficientFunds { .. }));
 }
 
 #[tokio::test]
@@ -264,7 +327,14 @@ async fn full_reservation_lifecycle() {
 
     // 1. Fund account
     acc_store
-        .apply_command(&BalanceCommand::new("c1", "mallory", 0, BalanceOperation::Credit, 1000, 1))
+        .apply_command(&BalanceCommand::new(
+            "c1",
+            "mallory",
+            0,
+            BalanceOperation::Credit,
+            1000,
+            1,
+        ))
         .await
         .unwrap();
 
@@ -274,23 +344,42 @@ async fn full_reservation_lifecycle() {
 
     // 3. Reserve via balance command
     acc_store
-        .apply_command(&BalanceCommand::new("c2", "mallory", 1, BalanceOperation::Reserve, 400, 1))
+        .apply_command(&BalanceCommand::new(
+            "c2",
+            "mallory",
+            1,
+            BalanceOperation::Reserve,
+            400,
+            1,
+        ))
         .await
         .unwrap();
 
     // 4. Commit reservation
     res_store
-        .transition("res-full", ReservationState::Prepared, ReservationState::Committed)
+        .transition(
+            "res-full",
+            ReservationState::Prepared,
+            ReservationState::Committed,
+        )
         .await
         .unwrap();
 
     // 5. External settlement succeeds → consume
     res_store
-        .transition("res-full", ReservationState::Committed, ReservationState::Consumed)
+        .transition(
+            "res-full",
+            ReservationState::Committed,
+            ReservationState::Consumed,
+        )
         .await
         .unwrap();
 
-    let r = res_store.get_reservation("res-full").await.unwrap().unwrap();
+    let r = res_store
+        .get_reservation("res-full")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r.state, ReservationState::Consumed);
 
     let state = acc_store.get_account("mallory").await.unwrap().unwrap();
@@ -320,10 +409,7 @@ async fn same_id_different_hash_returns_idempotency_conflict() {
     store.record(rec).await.unwrap();
 
     let err = store.check("idem-2", "hash-def").await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::IdempotencyConflict { .. }
-    ));
+    assert!(matches!(err, LedgerError::IdempotencyConflict { .. }));
 }
 
 #[tokio::test]
@@ -359,11 +445,25 @@ async fn commands_stored_and_retrievable() {
 async fn valid_transfer_updates_both_atomically() {
     let store = InMemoryVersionedAccountStore::new();
     store
-        .apply_command(&BalanceCommand::new("s1", "src", 0, BalanceOperation::Credit, 1000, 1))
+        .apply_command(&BalanceCommand::new(
+            "s1",
+            "src",
+            0,
+            BalanceOperation::Credit,
+            1000,
+            1,
+        ))
         .await
         .unwrap();
     store
-        .apply_command(&BalanceCommand::new("s2", "dst", 0, BalanceOperation::Credit, 500, 1))
+        .apply_command(&BalanceCommand::new(
+            "s2",
+            "dst",
+            0,
+            BalanceOperation::Credit,
+            500,
+            1,
+        ))
         .await
         .unwrap();
 
@@ -380,20 +480,31 @@ async fn valid_transfer_updates_both_atomically() {
 async fn transfer_insufficient_balance_rejected() {
     let store = InMemoryVersionedAccountStore::new();
     store
-        .apply_command(&BalanceCommand::new("s1", "src", 0, BalanceOperation::Credit, 50, 1))
+        .apply_command(&BalanceCommand::new(
+            "s1",
+            "src",
+            0,
+            BalanceOperation::Credit,
+            50,
+            1,
+        ))
         .await
         .unwrap();
     store
-        .apply_command(&BalanceCommand::new("s2", "dst", 0, BalanceOperation::Credit, 500, 1))
+        .apply_command(&BalanceCommand::new(
+            "s2",
+            "dst",
+            0,
+            BalanceOperation::Credit,
+            500,
+            1,
+        ))
         .await
         .unwrap();
 
     let tx = InternalTransferCommand::new("tx1", "src", 1, "dst", 1, 300, "auth-1");
     let err = store.apply_transfer(&tx).await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::InsufficientFunds { .. }
-    ));
+    assert!(matches!(err, LedgerError::InsufficientFunds { .. }));
 
     // Verify no partial state
     let src = store.get_account("src").await.unwrap().unwrap();
@@ -404,53 +515,89 @@ async fn transfer_insufficient_balance_rejected() {
 async fn transfer_source_version_mismatch_rejected() {
     let store = InMemoryVersionedAccountStore::new();
     store
-        .apply_command(&BalanceCommand::new("s1", "src", 0, BalanceOperation::Credit, 1000, 1))
+        .apply_command(&BalanceCommand::new(
+            "s1",
+            "src",
+            0,
+            BalanceOperation::Credit,
+            1000,
+            1,
+        ))
         .await
         .unwrap();
     store
-        .apply_command(&BalanceCommand::new("s2", "dst", 0, BalanceOperation::Credit, 500, 1))
+        .apply_command(&BalanceCommand::new(
+            "s2",
+            "dst",
+            0,
+            BalanceOperation::Credit,
+            500,
+            1,
+        ))
         .await
         .unwrap();
 
     // Wrong version on source
     let tx = InternalTransferCommand::new("tx1", "src", 0, "dst", 1, 300, "auth-1");
     let err = store.apply_transfer(&tx).await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::VersionConflict { .. }
-    ));
+    assert!(matches!(err, LedgerError::VersionConflict { .. }));
 }
 
 #[tokio::test]
 async fn transfer_dest_version_mismatch_rejected() {
     let store = InMemoryVersionedAccountStore::new();
     store
-        .apply_command(&BalanceCommand::new("s1", "src", 0, BalanceOperation::Credit, 1000, 1))
+        .apply_command(&BalanceCommand::new(
+            "s1",
+            "src",
+            0,
+            BalanceOperation::Credit,
+            1000,
+            1,
+        ))
         .await
         .unwrap();
     store
-        .apply_command(&BalanceCommand::new("s2", "dst", 0, BalanceOperation::Credit, 500, 1))
+        .apply_command(&BalanceCommand::new(
+            "s2",
+            "dst",
+            0,
+            BalanceOperation::Credit,
+            500,
+            1,
+        ))
         .await
         .unwrap();
 
     // Wrong version on dest
     let tx = InternalTransferCommand::new("tx1", "src", 1, "dst", 0, 300, "auth-1");
     let err = store.apply_transfer(&tx).await.unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::VersionConflict { .. }
-    ));
+    assert!(matches!(err, LedgerError::VersionConflict { .. }));
 }
 
 #[tokio::test]
 async fn transfer_no_partial_state_on_failure() {
     let store = InMemoryVersionedAccountStore::new();
     store
-        .apply_command(&BalanceCommand::new("s1", "src", 0, BalanceOperation::Credit, 1000, 1))
+        .apply_command(&BalanceCommand::new(
+            "s1",
+            "src",
+            0,
+            BalanceOperation::Credit,
+            1000,
+            1,
+        ))
         .await
         .unwrap();
     store
-        .apply_command(&BalanceCommand::new("s2", "dst", 0, BalanceOperation::Credit, 500, 1))
+        .apply_command(&BalanceCommand::new(
+            "s2",
+            "dst",
+            0,
+            BalanceOperation::Credit,
+            500,
+            1,
+        ))
         .await
         .unwrap();
 

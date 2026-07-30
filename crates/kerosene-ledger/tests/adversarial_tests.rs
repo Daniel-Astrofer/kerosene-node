@@ -18,10 +18,9 @@ use kerosene_ledger::{
         SettlementPolicy, VaultAuthorizationVerifier,
     },
     state_machine::{ConsensusProfile, DeterministicStateMachine, MembershipView},
-    BasicMetricsCollector, DegradedMode, InMemoryNonceChecker,
-    LedgerCommand, LedgerCommandType, LedgerError, LedgerMetrics, LedgerState, MetricsCollector,
-    ProductionGates, ReconciliationEngine, ReconciliationStatus, ReplicationStatus, StateMachine,
-    SyncStatus,
+    BasicMetricsCollector, DegradedMode, InMemoryNonceChecker, LedgerCommand, LedgerCommandType,
+    LedgerError, LedgerMetrics, LedgerState, MetricsCollector, ProductionGates,
+    ReconciliationEngine, ReconciliationStatus, ReplicationStatus, StateMachine, SyncStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +33,62 @@ fn test_membership() -> MembershipView {
         nodes: vec!["node-1".into()],
         active_profile: ConsensusProfile::Single,
     }
+}
+
+/// Generate a real Ed25519 keypair for testing.
+fn test_keypair() -> (ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey) {
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+    let verifying_key = signing_key.verifying_key();
+    (signing_key, verifying_key)
+}
+
+/// Sign a message with the given signing key and return the hex-encoded signature.
+fn sign_message(signing_key: &ed25519_dalek::SigningKey, message: &[u8]) -> String {
+    use ed25519_dalek::Signer;
+    let signature = signing_key.sign(message);
+    hex::encode(signature.to_bytes())
+}
+
+/// Create a QuorumCertificate with a real Ed25519 signature valid against its own signing message.
+fn make_signed_qc(
+    cluster_id: &str,
+    epoch: u64,
+    view: u64,
+    sequence: u64,
+    command_hash: &str,
+    prev_root: &str,
+    result_root: &str,
+    node_id: &str,
+) -> (QuorumCertificate, String) {
+    let (sk, vk) = test_keypair();
+    let pk_hex = hex::encode(vk.to_bytes());
+    let stub = QuorumCertificate::single_node(
+        cluster_id,
+        epoch,
+        view,
+        sequence,
+        command_hash,
+        prev_root,
+        result_root,
+        node_id,
+        "",
+        &pk_hex,
+    );
+    let msg = stub.signing_message();
+    let sig_hex = sign_message(&sk, &msg);
+    let qc = QuorumCertificate::single_node(
+        cluster_id,
+        epoch,
+        view,
+        sequence,
+        command_hash,
+        prev_root,
+        result_root,
+        node_id,
+        &sig_hex,
+        &pk_hex,
+    );
+    (qc, pk_hex)
 }
 
 fn credit_cmd(account: &str, amount: u64, version: u64) -> LedgerCommand {
@@ -141,9 +196,7 @@ fn concurrency_withdrawal_and_transfer_same_account() {
         machine
             .apply(&mut st, &credit_cmd("alice", 100, 0))
             .unwrap();
-        machine
-            .apply(&mut st, &credit_cmd("bob", 0, 0))
-            .unwrap();
+        machine.apply(&mut st, &credit_cmd("bob", 0, 0)).unwrap();
     }
 
     let s1 = Arc::clone(&state);
@@ -185,9 +238,7 @@ fn concurrency_circular_transfer() {
         machine
             .apply(&mut st, &credit_cmd("alice", 100, 0))
             .unwrap();
-        machine
-            .apply(&mut st, &credit_cmd("bob", 100, 0))
-            .unwrap();
+        machine.apply(&mut st, &credit_cmd("bob", 100, 0)).unwrap();
     }
 
     let s1 = Arc::clone(&state);
@@ -232,10 +283,7 @@ fn concurrency_many_commands_no_overspend() {
         let m = Arc::clone(&machine);
         handles.push(std::thread::spawn(move || {
             let mut st = s.lock().unwrap();
-            let version = st
-                .find_account("alice")
-                .map(|a| a.version)
-                .unwrap_or(0);
+            let version = st.find_account("alice").map(|a| a.version).unwrap_or(0);
             let cmd = LedgerCommand::new(
                 format!("adv-concurrent-debit-{}-{}", i, 10),
                 LedgerCommandType::DebitInternalBalance,
@@ -274,9 +322,7 @@ fn concurrency_independent_accounts_all_succeed() {
         machine
             .apply(&mut st, &credit_cmd("alice", 100, 0))
             .unwrap();
-        machine
-            .apply(&mut st, &credit_cmd("bob", 200, 0))
-            .unwrap();
+        machine.apply(&mut st, &credit_cmd("bob", 200, 0)).unwrap();
     }
 
     let s1 = Arc::clone(&state);
@@ -570,7 +616,10 @@ fn sync_snapshot_and_replay_tail() {
     let mut full_state = LedgerState::empty(test_membership());
 
     for i in 0..20 {
-        let ver = full_state.find_account("alice").map(|a| a.version).unwrap_or(0);
+        let ver = full_state
+            .find_account("alice")
+            .map(|a| a.version)
+            .unwrap_or(0);
         let cmd = LedgerCommand::new(
             format!("snap-credit-{}", i),
             LedgerCommandType::CreditInternalBalance,
@@ -589,7 +638,10 @@ fn sync_snapshot_and_replay_tail() {
     // Rebuilding from scratch should produce same root
     let mut fresh_state = LedgerState::empty(test_membership());
     for i in 0..20 {
-        let ver = fresh_state.find_account("alice").map(|a| a.version).unwrap_or(0);
+        let ver = fresh_state
+            .find_account("alice")
+            .map(|a| a.version)
+            .unwrap_or(0);
         let cmd = LedgerCommand::new(
             format!("snap-credit-{}", i),
             LedgerCommandType::CreditInternalBalance,
@@ -603,10 +655,7 @@ fn sync_snapshot_and_replay_tail() {
     }
 
     let fresh_root = kerosene_ledger::compute_state_root(&fresh_state);
-    assert_eq!(
-        full_root, fresh_root,
-        "deterministic replay from snapshot"
-    );
+    assert_eq!(full_root, fresh_root, "deterministic replay from snapshot");
 }
 
 /// Test 16: Node catches up and returns to healthy.
@@ -773,9 +822,17 @@ async fn snapshot_tampering_detection() {
     let state = LedgerState::empty(test_membership());
     let root = kerosene_ledger::compute_state_root(&state);
 
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
-    );
+    let qc = make_signed_qc(
+        "cluster-1",
+        1,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
+    )
+    .0;
     let state_bytes = vec![0];
     let snapshot = kerosene_ledger::CertifiedSnapshot {
         cluster_id: "cluster-1".into(),
@@ -896,7 +953,10 @@ fn partition_timeout_after_commit_retry() {
     let retry_result = machine.apply(&mut state, &cmd);
 
     // Retry should fail (version conflict)
-    assert!(retry_result.is_err(), "retry after commit should be rejected");
+    assert!(
+        retry_result.is_err(),
+        "retry after commit should be rejected"
+    );
 
     let root_after_retry = kerosene_ledger::compute_state_root(&state);
     assert_eq!(
@@ -965,13 +1025,13 @@ fn blockchain_withdrawal_rbf() {
 
     // Apply RBF replacement
     let replacement = UtxoEntry::new_seen(OutPoint::new("rbf-tx", 0), 100_000, "bc1qwd", 200);
-    let released = kerosene_ledger::apply_rbf_replacement(&mut state.utxos, "wd-tx", &[replacement])
-        .unwrap();
+    let released =
+        kerosene_ledger::apply_rbf_replacement(&mut state.utxos, "wd-tx", &[replacement]).unwrap();
 
     assert!(released.is_empty());
     assert_eq!(state.utxos[0].state, OnchainState::Replaced);
     assert_eq!(state.utxos.len(), 2);
-    assert_eq!(state.utxos[1].txid, "rbf-tx");
+    assert_eq!(state.utxos[1].outpoint.txid, "rbf-tx");
 }
 
 /// Test 29: Observer sends false chain data — consensus rejects.
@@ -1034,9 +1094,17 @@ fn vault_offline_or_invalid_share() {
     };
     let nonce_checker = InMemoryNonceChecker::new();
 
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
-    );
+    let qc = make_signed_qc(
+        "cluster-1",
+        1,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
+    )
+    .0;
     let auth = SettlementAuthorization {
         intent_commitment: String::new(),
         command_hash: "cmd-hash".into(),
@@ -1059,7 +1127,10 @@ fn vault_offline_or_invalid_share() {
         50,
     );
 
-    assert!(result.is_err(), "empty intent_commitment should be rejected");
+    assert!(
+        result.is_err(),
+        "empty intent_commitment should be rejected"
+    );
 }
 
 /// Test 32: Nonce reuse attempt — rejected.
@@ -1076,9 +1147,17 @@ fn vault_nonce_reuse_rejected() {
         authorization_ttl_buckets: 100,
     };
 
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
-    );
+    let qc = make_signed_qc(
+        "cluster-1",
+        1,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
+    )
+    .0;
     let auth = SettlementAuthorization {
         intent_commitment: "intent-1".into(),
         command_hash: "cmd-hash".into(),
@@ -1134,9 +1213,17 @@ fn vault_certificate_psbt_mismatch() {
     };
     let nonce_checker = InMemoryNonceChecker::new();
 
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
-    );
+    let qc = make_signed_qc(
+        "cluster-1",
+        1,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
+    )
+    .0;
     let auth = SettlementAuthorization {
         intent_commitment: "intent-1".into(),
         command_hash: "cmd-hash".into(),
@@ -1177,9 +1264,17 @@ fn vault_expired_authorization_rejected() {
     };
     let nonce_checker = InMemoryNonceChecker::new();
 
-    let qc = QuorumCertificate::single_node(
-        "cluster-1", 1, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
-    );
+    let qc = make_signed_qc(
+        "cluster-1",
+        1,
+        0,
+        1,
+        "cmd-hash",
+        "prev-root",
+        "result-root",
+        "node-1",
+    )
+    .0;
     let auth = SettlementAuthorization {
         intent_commitment: "intent-1".into(),
         command_hash: "cmd-hash".into(),
@@ -1323,15 +1418,24 @@ fn integration_reconciliation_surplus_from_utxos() {
 #[test]
 fn integration_multiple_utxos_aggregated() {
     let mut state = LedgerState::empty(test_membership());
-    state
-        .utxos
-        .push(UtxoEntry::new_seen(OutPoint::new("a", 0), 100_000, "addr1", 1));
-    state
-        .utxos
-        .push(UtxoEntry::new_seen(OutPoint::new("b", 0), 200_000, "addr2", 2));
-    state
-        .utxos
-        .push(UtxoEntry::new_seen(OutPoint::new("c", 0), 300_000, "addr3", 3));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("a", 0),
+        100_000,
+        "addr1",
+        1,
+    ));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("b", 0),
+        200_000,
+        "addr2",
+        2,
+    ));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("c", 0),
+        300_000,
+        "addr3",
+        3,
+    ));
 
     assert_eq!(ReconciliationEngine::compute_total_assets(&state), 600_000);
 }
@@ -1343,9 +1447,12 @@ fn integration_spent_utxos_excluded() {
     let mut spent = UtxoEntry::new_seen(OutPoint::new("spent", 0), 500_000, "addr", 1);
     spent.state = OnchainState::Spent;
     state.utxos.push(spent);
-    state
-        .utxos
-        .push(UtxoEntry::new_seen(OutPoint::new("active", 0), 300_000, "addr2", 2));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("active", 0),
+        300_000,
+        "addr2",
+        2,
+    ));
 
     assert_eq!(ReconciliationEngine::compute_total_assets(&state), 300_000);
 }

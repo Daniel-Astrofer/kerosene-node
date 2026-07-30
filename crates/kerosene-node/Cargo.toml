@@ -23,12 +23,14 @@ hex.workspace = true
 kerosene-contracts.workspace = true
 kerosene-discovery = { path = "../kerosene-discovery" }
 kerosene-identity-core = { path = "../kerosene-identity-core" }
+kerosene-ledger = { path = "../kerosene-ledger" }
 kerosene-membership = { path = "../kerosene-membership" }
 kerosene-sync = { path = "../kerosene-sync" }
 parking_lot.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sled.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

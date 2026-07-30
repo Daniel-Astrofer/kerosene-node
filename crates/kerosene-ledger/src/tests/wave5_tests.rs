@@ -1,8 +1,8 @@
 use crate::{
-    apply_rbf_replacement, compute_state_root, compute_utxo_root, DetectUtxoPayload, OnchainState,
-    OutPoint, ReorgPayload, UtxoEntry, LedgerCommand,
-    LedgerCommandType, LedgerState, LedgerError, MembershipView, StateMachine,
-    DeterministicStateMachine, InMemoryUtxoStore, UtxoStore,
+    apply_rbf_replacement, compute_state_root, compute_utxo_root, DetectUtxoPayload,
+    DeterministicStateMachine, InMemoryUtxoStore, LedgerCommand, LedgerCommandType, LedgerError,
+    LedgerState, MembershipView, OnchainState, OutPoint, ReorgPayload, StateMachine, UtxoEntry,
+    UtxoStore,
 };
 
 // Helper: create a single-node membership for tests.
@@ -106,7 +106,11 @@ fn spend_cmd(txid: &str, vout: u32, spent_by: Option<&str>) -> LedgerCommand {
 
 // Helper: advance a UTXO through InMempool then Confirming via direct mutation.
 fn advance_to_confirming(state: &mut LedgerState, txid: &str, vout: u32) {
-    if let Some(utxo) = state.utxos.iter_mut().find(|u| u.txid == txid && u.vout == vout) {
+    if let Some(utxo) = state
+        .utxos
+        .iter_mut()
+        .find(|u| u.outpoint.txid == txid && u.outpoint.vout == vout)
+    {
         utxo.state = OnchainState::Confirming;
         utxo.block_height = Some(100);
         utxo.confirmed_at_bucket = Some(50);
@@ -115,7 +119,11 @@ fn advance_to_confirming(state: &mut LedgerState, txid: &str, vout: u32) {
 
 fn advance_to_spendable(state: &mut LedgerState, txid: &str, vout: u32) {
     advance_to_confirming(state, txid, vout);
-    if let Some(utxo) = state.utxos.iter_mut().find(|u| u.txid == txid && u.vout == vout) {
+    if let Some(utxo) = state
+        .utxos
+        .iter_mut()
+        .find(|u| u.outpoint.txid == txid && u.outpoint.vout == vout)
+    {
         utxo.state = OnchainState::Spendable;
     }
 }
@@ -134,8 +142,8 @@ fn detect_new_utxo_creates_seen() {
 
     assert_eq!(state.utxos.len(), 1);
     let utxo = &state.utxos[0];
-    assert_eq!(utxo.txid, "tx1");
-    assert_eq!(utxo.vout, 0);
+    assert_eq!(utxo.outpoint.txid, "tx1");
+    assert_eq!(utxo.outpoint.vout, 0);
     assert_eq!(utxo.value_sats, 50000);
     assert_eq!(utxo.address, "addr1");
     assert_eq!(utxo.state, OnchainState::Seen);
@@ -171,7 +179,11 @@ fn detect_utxo_with_zero_value_rejected() {
         100,
     );
     let err = sm.validate(&state, &cmd).unwrap_err();
-    assert!(err.to_string().contains("value_sats must be > 0"), "got: {}", err);
+    assert!(
+        err.to_string().contains("value_sats must be > 0"),
+        "got: {}",
+        err
+    );
 }
 
 #[test]
@@ -189,7 +201,11 @@ fn detect_utxo_empty_address_rejected() {
         100,
     );
     let err = sm.validate(&state, &cmd).unwrap_err();
-    assert!(err.to_string().contains("address must not be empty"), "got: {}", err);
+    assert!(
+        err.to_string().contains("address must not be empty"),
+        "got: {}",
+        err
+    );
 }
 
 #[test]
@@ -215,7 +231,8 @@ fn confirm_utxo_transitions_to_confirming() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
 
     // Directly set to InMempool first (needed for valid transition)
     state.utxos[0].state = OnchainState::InMempool;
@@ -234,7 +251,8 @@ fn mark_spendable_transitions_confirming_to_spendable() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_confirming(&mut state, "tx1", 0);
 
     let cmd = spendable_cmd("tx1", 0);
@@ -248,7 +266,8 @@ fn spend_utxo_transitions_to_spent() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_spendable(&mut state, "tx1", 0);
 
     let cmd = spend_cmd("tx1", 0, Some("spending-tx"));
@@ -265,7 +284,8 @@ fn spend_releases_reservation() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_spendable(&mut state, "tx1", 0);
 
     // Reserve it
@@ -288,14 +308,12 @@ fn invalid_transition_seen_to_spent_rejected() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
 
     let cmd = spend_cmd("tx1", 0, None);
     let err = sm.apply(&mut state, &cmd).unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::InvalidUtxoTransition { .. }
-    ));
+    assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
 }
 
 #[test]
@@ -303,14 +321,12 @@ fn invalid_transition_seen_to_confirming_rejected() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
 
     let cmd = confirm_cmd("tx1", 0, 100, 50);
     let err = sm.apply(&mut state, &cmd).unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::InvalidUtxoTransition { .. }
-    ));
+    assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
 }
 
 #[test]
@@ -329,14 +345,16 @@ fn full_utxo_lifecycle_through_state_machine() {
     let mut state = LedgerState::empty(test_membership());
 
     // 1. Detect
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 100000, "addr1", 10)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 100000, "addr1", 10))
+        .unwrap();
     assert_eq!(state.utxos[0].state, OnchainState::Seen);
 
     // 2. Transition to InMempool (direct mutation for test simplicity)
     state.utxos[0].state = OnchainState::InMempool;
 
     // 3. Confirm
-    sm.apply(&mut state, &confirm_cmd("tx1", 0, 500000, 50)).unwrap();
+    sm.apply(&mut state, &confirm_cmd("tx1", 0, 500000, 50))
+        .unwrap();
     assert_eq!(state.utxos[0].state, OnchainState::Confirming);
 
     // 4. Mark spendable
@@ -362,9 +380,12 @@ fn detect_multiple_utxos() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 100, "addr1", 10)).unwrap();
-    sm.apply(&mut state, &detect_cmd("tx1", 1, 200, "addr2", 10)).unwrap();
-    sm.apply(&mut state, &detect_cmd("tx2", 0, 300, "addr3", 10)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 100, "addr1", 10))
+        .unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 1, 200, "addr2", 10))
+        .unwrap();
+    sm.apply(&mut state, &detect_cmd("tx2", 0, 300, "addr3", 10))
+        .unwrap();
 
     assert_eq!(state.utxos.len(), 3);
 
@@ -381,7 +402,8 @@ fn reserve_available_utxo_succeeds() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_spendable(&mut state, "tx1", 0);
 
     let cmd = reserve_cmd("tx1", 0, "command-1");
@@ -396,7 +418,8 @@ fn double_reserve_same_utxo_rejected() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_spendable(&mut state, "tx1", 0);
 
     let cmd1 = reserve_cmd("tx1", 0, "command-1");
@@ -404,10 +427,7 @@ fn double_reserve_same_utxo_rejected() {
 
     let cmd2 = reserve_cmd("tx1", 0, "command-2");
     let err = sm.apply(&mut state, &cmd2).unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::UtxoAlreadyReserved { .. }
-    ));
+    assert!(matches!(err, LedgerError::UtxoAlreadyReserved { .. }));
 }
 
 #[test]
@@ -415,7 +435,8 @@ fn release_reservation_succeeds() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_spendable(&mut state, "tx1", 0);
 
     let rcmd = reserve_cmd("tx1", 0, "command-1");
@@ -434,15 +455,13 @@ fn release_unreserved_utxo_rejected() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_spendable(&mut state, "tx1", 0);
 
     let cmd = release_cmd("tx1", 0);
     let err = sm.apply(&mut state, &cmd).unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::UtxoNotReserved
-    ));
+    assert!(matches!(err, LedgerError::UtxoNotReserved));
 }
 
 #[test]
@@ -451,14 +470,12 @@ fn reserve_utxo_not_spendable_rejected() {
     let mut state = LedgerState::empty(test_membership());
 
     // UTXO in Seen state — not reservable
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
 
     let cmd = reserve_cmd("tx1", 0, "command-1");
     let err = sm.apply(&mut state, &cmd).unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::InvalidUtxoTransition { .. }
-    ));
+    assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
 }
 
 // ============================================================================
@@ -470,7 +487,8 @@ fn reorg_disconnects_confirming_utxos() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_confirming(&mut state, "tx1", 0);
 
     let payload = ReorgPayload {
@@ -499,7 +517,8 @@ fn reorg_then_re_detect_works() {
     let mut state = LedgerState::empty(test_membership());
 
     // Detect and confirm
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 50000, "addr1", 100))
+        .unwrap();
     advance_to_confirming(&mut state, "tx1", 0);
 
     // Reorg it
@@ -532,7 +551,8 @@ fn reorg_adds_new_utxos() {
     let mut state = LedgerState::empty(test_membership());
 
     // Existing UTXO that is NOT disconnected
-    sm.apply(&mut state, &detect_cmd("tx_existing", 0, 1000, "addr1", 10)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx_existing", 0, 1000, "addr1", 10))
+        .unwrap();
     advance_to_spendable(&mut state, "tx_existing", 0);
 
     let new_utxo = UtxoEntry::new_seen(OutPoint::new("tx_new", 0), 2000, "addr2", 0);
@@ -561,7 +581,11 @@ fn reorg_unaffected_utxos_unchanged() {
     let sm = StateMachine;
     let mut state = LedgerState::empty(test_membership());
 
-    sm.apply(&mut state, &detect_cmd("tx_unaffected", 0, 5000, "addr1", 10)).unwrap();
+    sm.apply(
+        &mut state,
+        &detect_cmd("tx_unaffected", 0, 5000, "addr1", 10),
+    )
+    .unwrap();
     advance_to_spendable(&mut state, "tx_unaffected", 0);
 
     let payload = ReorgPayload {
@@ -592,8 +616,10 @@ fn rbf_replaces_utxos_and_releases_reservations() {
     let mut state = LedgerState::empty(test_membership());
 
     // Create UTXOs for tx1
-    sm.apply(&mut state, &detect_cmd("tx1", 0, 1000, "addr1", 10)).unwrap();
-    sm.apply(&mut state, &detect_cmd("tx1", 1, 2000, "addr2", 10)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 0, 1000, "addr1", 10))
+        .unwrap();
+    sm.apply(&mut state, &detect_cmd("tx1", 1, 2000, "addr2", 10))
+        .unwrap();
     advance_to_spendable(&mut state, "tx1", 0);
     advance_to_spendable(&mut state, "tx1", 1);
 
@@ -603,25 +629,25 @@ fn rbf_replaces_utxos_and_releases_reservations() {
 
     // Use the standalone RBF function
     let replacement = UtxoEntry::new_seen(OutPoint::new("tx2", 0), 3000, "addr3", 10);
-    let released = apply_rbf_replacement(
-        &mut state.utxos,
-        "tx1",
-        &[replacement],
-    )
-    .unwrap();
+    let released = apply_rbf_replacement(&mut state.utxos, "tx1", &[replacement]).unwrap();
 
     assert_eq!(released, vec!["res-1".to_string()]);
     assert_eq!(state.utxos[0].state, OnchainState::Replaced);
     assert_eq!(state.utxos[1].state, OnchainState::Replaced);
     assert_eq!(state.utxos.len(), 3);
     assert_eq!(state.utxos[2].state, OnchainState::Seen);
-    assert_eq!(state.utxos[2].txid, "tx2");
+    assert_eq!(state.utxos[2].outpoint.txid, "tx2");
 }
 
 #[test]
 fn rbf_with_no_reservations() {
     let mut state = LedgerState::empty(test_membership());
-    state.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 1000, "addr1", 10));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx1", 0),
+        1000,
+        "addr1",
+        10,
+    ));
 
     let replacement = UtxoEntry::new_seen(OutPoint::new("tx2", 0), 1500, "addr2", 10);
     let released = apply_rbf_replacement(&mut state.utxos, "tx1", &[replacement]).unwrap();
@@ -633,7 +659,12 @@ fn rbf_with_no_reservations() {
 #[test]
 fn rbf_replacement_already_exists_skipped() {
     let mut state = LedgerState::empty(test_membership());
-    state.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 1000, "addr1", 10));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx1", 0),
+        1000,
+        "addr1",
+        10,
+    ));
 
     // Replacement UTXO already present
     let replacement = UtxoEntry::new_seen(OutPoint::new("tx1", 0), 1000, "addr1", 10);
@@ -656,13 +687,23 @@ fn state_root_includes_utxos() {
     let root_empty = compute_state_root(&state1);
 
     // Add UTXO to state1 only
-    state1.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 100, "addr1", 1));
+    state1.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx1", 0),
+        100,
+        "addr1",
+        1,
+    ));
     let root_with_utxo = compute_state_root(&state1);
 
     assert_ne!(root_empty, root_with_utxo, "UTXO must affect state root");
 
     // Same UTXO set produces same root
-    state2.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 100, "addr1", 1));
+    state2.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx1", 0),
+        100,
+        "addr1",
+        1,
+    ));
     let root2 = compute_state_root(&state2);
     assert_eq!(root_with_utxo, root2, "same UTXO set = same root");
 }
@@ -670,8 +711,18 @@ fn state_root_includes_utxos() {
 #[test]
 fn state_root_with_utxos_is_deterministic() {
     let mut state = LedgerState::empty(test_membership());
-    state.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx_b", 0), 200, "addr2", 2));
-    state.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx_a", 0), 100, "addr1", 1));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx_b", 0),
+        200,
+        "addr2",
+        2,
+    ));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx_a", 0),
+        100,
+        "addr1",
+        1,
+    ));
 
     let root1 = compute_state_root(&state);
     let root2 = compute_state_root(&state);
@@ -681,11 +732,21 @@ fn state_root_with_utxos_is_deterministic() {
 #[test]
 fn different_utxo_value_changes_root() {
     let mut state = LedgerState::empty(test_membership());
-    state.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 100, "addr1", 1));
+    state.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx1", 0),
+        100,
+        "addr1",
+        1,
+    ));
     let root1 = compute_state_root(&state);
 
     let mut state2 = LedgerState::empty(test_membership());
-    state2.utxos.push(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 200, "addr1", 1));
+    state2.utxos.push(UtxoEntry::new_seen(
+        OutPoint::new("tx1", 0),
+        200,
+        "addr1",
+        1,
+    ));
     let root2 = compute_state_root(&state2);
 
     assert_ne!(root1, root2);
@@ -697,15 +758,19 @@ fn utxo_order_does_not_affect_state_root() {
     let mut state = LedgerState::empty(test_membership());
 
     // Add UTXOs via state machine
-    sm.apply(&mut state, &detect_cmd("tx_b", 0, 200, "addr2", 1)).unwrap();
-    sm.apply(&mut state, &detect_cmd("tx_a", 0, 100, "addr1", 1)).unwrap();
+    sm.apply(&mut state, &detect_cmd("tx_b", 0, 200, "addr2", 1))
+        .unwrap();
+    sm.apply(&mut state, &detect_cmd("tx_a", 0, 100, "addr1", 1))
+        .unwrap();
 
     let root = compute_state_root(&state);
 
     // Rebuild with different insertion order
     let mut state2 = LedgerState::empty(test_membership());
-    sm.apply(&mut state2, &detect_cmd("tx_a", 0, 100, "addr1", 1)).unwrap();
-    sm.apply(&mut state2, &detect_cmd("tx_b", 0, 200, "addr2", 1)).unwrap();
+    sm.apply(&mut state2, &detect_cmd("tx_a", 0, 100, "addr1", 1))
+        .unwrap();
+    sm.apply(&mut state2, &detect_cmd("tx_b", 0, 200, "addr2", 1))
+        .unwrap();
 
     let root2 = compute_state_root(&state2);
     assert_eq!(root, root2, "state root must be order-independent");
@@ -741,7 +806,11 @@ async fn in_memory_store_add_get_list() {
 
     store.add_utxo(utxo.clone()).await.unwrap();
 
-    let fetched = store.get_utxo(&OutPoint::new("tx1", 0)).await.unwrap().unwrap();
+    let fetched = store
+        .get_utxo(&OutPoint::new("tx1", 0))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched, utxo);
 
     let all = store.list_all().await.unwrap();
@@ -757,35 +826,80 @@ async fn in_memory_store_add_get_list() {
 #[tokio::test]
 async fn in_memory_store_update_state() {
     let store = InMemoryUtxoStore::new();
-    store.add_utxo(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 1000, "addr1", 1)).await.unwrap();
+    store
+        .add_utxo(UtxoEntry::new_seen(
+            OutPoint::new("tx1", 0),
+            1000,
+            "addr1",
+            1,
+        ))
+        .await
+        .unwrap();
 
-    store.update_state(&OutPoint::new("tx1", 0), OnchainState::InMempool).await.unwrap();
-    let utxo = store.get_utxo(&OutPoint::new("tx1", 0)).await.unwrap().unwrap();
+    store
+        .update_state(&OutPoint::new("tx1", 0), OnchainState::InMempool)
+        .await
+        .unwrap();
+    let utxo = store
+        .get_utxo(&OutPoint::new("tx1", 0))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(utxo.state, OnchainState::InMempool);
 }
 
 #[tokio::test]
 async fn in_memory_store_reserve_release() {
     let store = InMemoryUtxoStore::new();
-    store.add_utxo(UtxoEntry {
-        state: OnchainState::Spendable,
-        ..UtxoEntry::new_seen(OutPoint::new("tx1", 0), 1000, "addr1", 1)
-    }).await.unwrap();
+    store
+        .add_utxo(UtxoEntry {
+            state: OnchainState::Spendable,
+            ..UtxoEntry::new_seen(OutPoint::new("tx1", 0), 1000, "addr1", 1)
+        })
+        .await
+        .unwrap();
 
-    store.reserve(&OutPoint::new("tx1", 0), "res-1", 100).await.unwrap();
-    let utxo = store.get_utxo(&OutPoint::new("tx1", 0)).await.unwrap().unwrap();
+    store
+        .reserve(&OutPoint::new("tx1", 0), "res-1", 100)
+        .await
+        .unwrap();
+    let utxo = store
+        .get_utxo(&OutPoint::new("tx1", 0))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(utxo.reserved_by, Some("res-1".to_string()));
 
     store.release(&OutPoint::new("tx1", 0)).await.unwrap();
-    let utxo = store.get_utxo(&OutPoint::new("tx1", 0)).await.unwrap().unwrap();
+    let utxo = store
+        .get_utxo(&OutPoint::new("tx1", 0))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(utxo.reserved_by.is_none());
 }
 
 #[tokio::test]
 async fn in_memory_store_root_hash_deterministic() {
     let store = InMemoryUtxoStore::new();
-    store.add_utxo(UtxoEntry::new_seen(OutPoint::new("tx1", 0), 100, "addr1", 1)).await.unwrap();
-    store.add_utxo(UtxoEntry::new_seen(OutPoint::new("tx2", 0), 200, "addr2", 1)).await.unwrap();
+    store
+        .add_utxo(UtxoEntry::new_seen(
+            OutPoint::new("tx1", 0),
+            100,
+            "addr1",
+            1,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_utxo(UtxoEntry::new_seen(
+            OutPoint::new("tx2", 0),
+            200,
+            "addr2",
+            1,
+        ))
+        .await
+        .unwrap();
 
     let hash1 = store.compute_utxo_root_hash().await.unwrap();
     let hash2 = store.compute_utxo_root_hash().await.unwrap();
@@ -798,7 +912,10 @@ async fn in_memory_store_empty() {
     let all = store.list_all().await.unwrap();
     assert!(all.is_empty());
 
-    let result = store.get_utxo(&OutPoint::new("nonexistent", 0)).await.unwrap();
+    let result = store
+        .get_utxo(&OutPoint::new("nonexistent", 0))
+        .await
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -821,10 +938,7 @@ fn detect_utxo_invalid_json_payload_rejected() {
         100,
     );
     let err = sm.validate(&state, &cmd).unwrap_err();
-    assert!(matches!(
-        err,
-        LedgerError::InvalidUtxoData(_)
-    ));
+    assert!(matches!(err, LedgerError::InvalidUtxoData(_)));
 }
 
 #[test]

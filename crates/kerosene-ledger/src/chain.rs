@@ -95,10 +95,6 @@ pub struct UtxoEntry {
     pub state: OnchainState,
     /// Block height where this UTXO was confirmed (None if not yet in a block).
     pub block_height: Option<u64>,
-    /// Transaction ID (redundant with outpoint.txid, stored for convenience).
-    pub txid: String,
-    /// Output index (redundant with outpoint.vout, stored for convenience).
-    pub vout: u32,
     /// Time bucket when this UTXO was first detected.
     pub detected_at_bucket: u64,
     /// Time bucket when this UTXO reached Confirming state.
@@ -121,16 +117,12 @@ impl UtxoEntry {
         address: impl Into<String>,
         detected_at_bucket: u64,
     ) -> Self {
-        let txid = outpoint.txid.clone();
-        let vout = outpoint.vout;
         Self {
             outpoint,
             value_sats,
             address: address.into(),
             state: OnchainState::Seen,
             block_height: None,
-            txid,
-            vout,
             detected_at_bucket,
             confirmed_at_bucket: None,
             reserved_by: None,
@@ -148,17 +140,16 @@ impl UtxoEntry {
     /// Returns `true` if this UTXO is in a terminal state (can no longer
     /// be meaningfully transitioned).
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.state,
-            OnchainState::Replaced | OnchainState::Spent
-        )
+        matches!(self.state, OnchainState::Replaced | OnchainState::Spent)
     }
 
     /// Returns `true` if this UTXO is available for reservation (Spendable
     /// or FinalizedByPolicy and not already reserved).
     pub fn is_available(&self) -> bool {
-        matches!(self.state, OnchainState::Spendable | OnchainState::FinalizedByPolicy)
-            && self.reserved_by.is_none()
+        matches!(
+            self.state,
+            OnchainState::Spendable | OnchainState::FinalizedByPolicy
+        ) && self.reserved_by.is_none()
     }
 }
 
@@ -249,7 +240,10 @@ impl UtxoTransitionGate {
                 | (OnchainState::Reorged, OnchainState::Seen)
         );
         if !allowed {
-            return Err(LedgerError::InvalidUtxoTransition { from: current, to: target });
+            return Err(LedgerError::InvalidUtxoTransition {
+                from: current,
+                to: target,
+            });
         }
         Ok(())
     }
@@ -282,7 +276,7 @@ impl ReorgHandler {
 
         // Mark affected UTXOs as Reorged
         for utxo in utxos.iter_mut() {
-            if disconnected_set.contains(&utxo.txid) {
+            if disconnected_set.contains(&utxo.outpoint.txid) {
                 if utxo.state == OnchainState::Confirming
                     || utxo.state == OnchainState::Spendable
                     || utxo.state == OnchainState::FinalizedByPolicy
@@ -331,7 +325,7 @@ pub fn apply_rbf_replacement(
 
     // Mark original UTXOs as Replaced and release reservations
     for utxo in utxos.iter_mut() {
-        if utxo.txid == replaced_txid && utxo.state != OnchainState::Replaced {
+        if utxo.outpoint.txid == replaced_txid && utxo.state != OnchainState::Replaced {
             // Release reservation if any
             if let Some(ref reserved_by) = utxo.reserved_by {
                 released_reservations.push(reserved_by.clone());
@@ -359,34 +353,100 @@ pub fn apply_rbf_replacement(
 // Deterministic UTXO root hash computation
 // ---------------------------------------------------------------------------
 
-/// Computes a deterministic Merkle-like root hash of all UTXO entries.
+/// Computes a deterministic Merkle-like root hash of all UTXO entries
+/// using canonical binary encoding.
 ///
 /// Entries are sorted by canonical outpoint key before hashing to guarantee
 /// determinism regardless of insertion order.
+///
+/// # Canonical encoding per entry
+/// - domain tag "KROOTv1:utxo_entry" prefix
+/// - binary u64 for all numeric fields
+/// - length-prefixed strings for variable fields
+/// - stable u8 discriminator for OnchainState
+/// - option flag (1 byte) + data for Option fields
 pub fn compute_utxo_root(utxos: &[UtxoEntry]) -> String {
-    let mut hasher = Sha256::new();
     let mut sorted = utxos.to_vec();
     sorted.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
 
+    let mut item_hashes: Vec<[u8; 32]> = Vec::with_capacity(sorted.len());
     for utxo in &sorted {
-        let line = format!(
-            "{}|{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}",
-            utxo.canonical_key(),
-            utxo.value_sats,
-            utxo.address,
-            utxo.state,
-            utxo.block_height,
-            utxo.detected_at_bucket,
-            utxo.confirmed_at_bucket,
-            utxo.reserved_by,
-            utxo.reserved_at_bucket,
-            utxo.spent_at_bucket,
-            utxo.spent_by_txid,
-        );
-        hasher.update(line.as_bytes());
-        hasher.update(b"\n");
+        let mut buf = Vec::new();
+        // OnchainState as stable discriminator
+        let state_code: u8 = match utxo.state {
+            OnchainState::Seen => 0,
+            OnchainState::InMempool => 1,
+            OnchainState::Confirming => 2,
+            OnchainState::Spendable => 3,
+            OnchainState::FinalizedByPolicy => 4,
+            OnchainState::Replaced => 5,
+            OnchainState::Reorged => 6,
+            OnchainState::Spent => 7,
+        };
+        buf.push(state_code);
+        buf.extend_from_slice(&utxo.value_sats.to_le_bytes());
+        buf.extend_from_slice(&utxo.outpoint.vout.to_le_bytes());
+        buf.extend_from_slice(&utxo.detected_at_bucket.to_le_bytes());
+        // Option fields
+        buf.extend_from_slice(&encode_block_height(utxo.block_height));
+        buf.extend_from_slice(&encode_option_bucket(utxo.confirmed_at_bucket));
+        buf.extend_from_slice(&encode_option_bucket(utxo.reserved_at_bucket));
+        buf.extend_from_slice(&encode_option_bucket(utxo.spent_at_bucket));
+        buf.extend_from_slice(&encode_option_string_fn(&utxo.reserved_by));
+        buf.extend_from_slice(&encode_option_string_fn(&utxo.spent_by_txid));
+        // Variable-length strings
+        buf.extend_from_slice(&encode_string_fn(&utxo.outpoint.txid));
+        buf.extend_from_slice(&encode_string_fn(&utxo.address));
+        buf.extend_from_slice(&encode_string_fn(&utxo.canonical_key()));
+
+        let hash = sha2::Sha256::digest(&buf);
+        item_hashes.push(hash.into());
     }
-    hex::encode(hasher.finalize())
+
+    // Sort all item hashes for order-independence
+    item_hashes.sort();
+
+    let mut final_hasher = Sha256::new();
+    final_hasher.update(b"KROOTv1:utxos");
+    for h in &item_hashes {
+        final_hasher.update(h);
+    }
+    hex::encode(final_hasher.finalize())
+}
+
+// Helper functions for canonical binary encoding
+fn encode_block_height(h: Option<u64>) -> Vec<u8> {
+    let mut buf = vec![u8::from(h.is_some())];
+    if let Some(v) = h {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    buf
+}
+
+fn encode_option_bucket(v: Option<u64>) -> Vec<u8> {
+    let mut buf = vec![u8::from(v.is_some())];
+    if let Some(n) = v {
+        buf.extend_from_slice(&n.to_le_bytes());
+    }
+    buf
+}
+
+fn encode_option_string_fn(v: &Option<String>) -> Vec<u8> {
+    let mut buf = vec![u8::from(v.is_some())];
+    if let Some(s) = v {
+        let bytes = s.as_bytes();
+        buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(bytes);
+    }
+    buf
+}
+
+fn encode_string_fn(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let mut buf = Vec::with_capacity(8 + bytes.len());
+    buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    buf.extend_from_slice(bytes);
+    buf
 }
 
 // ---------------------------------------------------------------------------
@@ -417,47 +477,59 @@ mod tests {
 
     #[test]
     fn valid_transition_seen_to_in_mempool() {
-        UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::InMempool).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::InMempool)
+            .unwrap();
     }
 
     #[test]
     fn valid_transition_in_mempool_to_seen() {
-        UtxoTransitionGate::validate_transition(OnchainState::InMempool, OnchainState::Seen).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::InMempool, OnchainState::Seen)
+            .unwrap();
     }
 
     #[test]
     fn valid_transition_seen_to_replaced() {
-        UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::Replaced).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::Replaced)
+            .unwrap();
     }
 
     #[test]
     fn valid_transition_in_mempool_to_confirming() {
-        UtxoTransitionGate::validate_transition(OnchainState::InMempool, OnchainState::Confirming).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::InMempool, OnchainState::Confirming)
+            .unwrap();
     }
 
     #[test]
     fn valid_transition_in_mempool_to_replaced() {
-        UtxoTransitionGate::validate_transition(OnchainState::InMempool, OnchainState::Replaced).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::InMempool, OnchainState::Replaced)
+            .unwrap();
     }
 
     #[test]
     fn valid_transition_confirming_to_spendable() {
-        UtxoTransitionGate::validate_transition(OnchainState::Confirming, OnchainState::Spendable).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::Confirming, OnchainState::Spendable)
+            .unwrap();
     }
 
     #[test]
     fn valid_transition_confirming_to_reorged() {
-        UtxoTransitionGate::validate_transition(OnchainState::Confirming, OnchainState::Reorged).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::Confirming, OnchainState::Reorged)
+            .unwrap();
     }
 
     #[test]
     fn valid_transition_spendable_to_finalized() {
-        UtxoTransitionGate::validate_transition(OnchainState::Spendable, OnchainState::FinalizedByPolicy).unwrap();
+        UtxoTransitionGate::validate_transition(
+            OnchainState::Spendable,
+            OnchainState::FinalizedByPolicy,
+        )
+        .unwrap();
     }
 
     #[test]
     fn valid_transition_spendable_to_spent() {
-        UtxoTransitionGate::validate_transition(OnchainState::Spendable, OnchainState::Spent).unwrap();
+        UtxoTransitionGate::validate_transition(OnchainState::Spendable, OnchainState::Spent)
+            .unwrap();
     }
 
     #[test]
@@ -467,31 +539,39 @@ mod tests {
 
     #[test]
     fn invalid_transition_seen_to_spent() {
-        let err = UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::Spent).unwrap_err();
+        let err = UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::Spent)
+            .unwrap_err();
         assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
     }
 
     #[test]
     fn invalid_transition_seen_to_confirming() {
-        let err = UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::Confirming).unwrap_err();
+        let err =
+            UtxoTransitionGate::validate_transition(OnchainState::Seen, OnchainState::Confirming)
+                .unwrap_err();
         assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
     }
 
     #[test]
     fn invalid_transition_reorged_to_spent() {
-        let err = UtxoTransitionGate::validate_transition(OnchainState::Reorged, OnchainState::Spent).unwrap_err();
+        let err =
+            UtxoTransitionGate::validate_transition(OnchainState::Reorged, OnchainState::Spent)
+                .unwrap_err();
         assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
     }
 
     #[test]
     fn invalid_transition_replaced_to_anything() {
-        let err = UtxoTransitionGate::validate_transition(OnchainState::Replaced, OnchainState::Seen).unwrap_err();
+        let err =
+            UtxoTransitionGate::validate_transition(OnchainState::Replaced, OnchainState::Seen)
+                .unwrap_err();
         assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
     }
 
     #[test]
     fn invalid_transition_spent_to_anything() {
-        let err = UtxoTransitionGate::validate_transition(OnchainState::Spent, OnchainState::Seen).unwrap_err();
+        let err = UtxoTransitionGate::validate_transition(OnchainState::Spent, OnchainState::Seen)
+            .unwrap_err();
         assert!(matches!(err, LedgerError::InvalidUtxoTransition { .. }));
     }
 
@@ -577,13 +657,8 @@ mod tests {
             ..UtxoEntry::new_seen(op, 1000, "addr", 10)
         }];
 
-        let affected = ReorgHandler::apply_reorg(
-            &mut utxos,
-            &["tx1".to_string()],
-            &[],
-            60,
-        )
-        .unwrap();
+        let affected =
+            ReorgHandler::apply_reorg(&mut utxos, &["tx1".to_string()], &[], 60).unwrap();
 
         assert_eq!(affected.len(), 1);
         assert_eq!(utxos[0].state, OnchainState::Reorged);
@@ -596,13 +671,8 @@ mod tests {
         let new_op = OutPoint::new("tx2", 0);
         let new_utxo = UtxoEntry::new_seen(new_op, 2000, "addr2", 0);
 
-        let affected = ReorgHandler::apply_reorg(
-            &mut utxos,
-            &["tx1".to_string()],
-            &[new_utxo],
-            70,
-        )
-        .unwrap();
+        let affected =
+            ReorgHandler::apply_reorg(&mut utxos, &["tx1".to_string()], &[new_utxo], 70).unwrap();
 
         assert_eq!(utxos.len(), 1);
         assert_eq!(utxos[0].state, OnchainState::Seen);
@@ -618,13 +688,9 @@ mod tests {
             ..UtxoEntry::new_seen(op, 1000, "addr", 10)
         }];
 
-        let affected = ReorgHandler::apply_reorg(
-            &mut utxos,
-            &["tx1".to_string(), "tx2".to_string()],
-            &[],
-            60,
-        )
-        .unwrap();
+        let affected =
+            ReorgHandler::apply_reorg(&mut utxos, &["tx1".to_string(), "tx2".to_string()], &[], 60)
+                .unwrap();
 
         assert_eq!(affected.len(), 0);
         assert_eq!(utxos[0].state, OnchainState::Spendable);
@@ -639,11 +705,7 @@ mod tests {
         }];
 
         // Re-detect: transition Reorged → Seen
-        UtxoTransitionGate::validate_transition(
-            utxos[0].state,
-            OnchainState::Seen,
-        )
-        .unwrap();
+        UtxoTransitionGate::validate_transition(utxos[0].state, OnchainState::Seen).unwrap();
         utxos[0].state = OnchainState::Seen;
 
         assert_eq!(utxos[0].state, OnchainState::Seen);
@@ -670,7 +732,7 @@ mod tests {
         assert_eq!(utxos[0].state, OnchainState::Replaced);
         assert_eq!(utxos[1].state, OnchainState::Replaced);
         assert_eq!(utxos.len(), 3);
-        assert_eq!(utxos[2].txid, "tx2");
+        assert_eq!(utxos[2].outpoint.txid, "tx2");
         assert_eq!(utxos[2].state, OnchainState::Seen);
     }
 
@@ -699,8 +761,7 @@ mod tests {
             ..UtxoEntry::new_seen(op, 1000, "addr1", 10)
         }];
 
-        let released =
-            apply_rbf_replacement(&mut utxos, "tx1", &[]).unwrap();
+        let released = apply_rbf_replacement(&mut utxos, "tx1", &[]).unwrap();
         assert!(released.is_empty());
         assert_eq!(utxos[0].state, OnchainState::Replaced);
     }
@@ -730,8 +791,18 @@ mod tests {
 
     #[test]
     fn different_utxos_produce_different_root() {
-        let utxos1 = vec![UtxoEntry::new_seen(OutPoint::new("tx1", 0), 100, "addr1", 1)];
-        let utxos2 = vec![UtxoEntry::new_seen(OutPoint::new("tx1", 0), 200, "addr1", 1)];
+        let utxos1 = vec![UtxoEntry::new_seen(
+            OutPoint::new("tx1", 0),
+            100,
+            "addr1",
+            1,
+        )];
+        let utxos2 = vec![UtxoEntry::new_seen(
+            OutPoint::new("tx1", 0),
+            200,
+            "addr1",
+            1,
+        )];
         assert_ne!(compute_utxo_root(&utxos1), compute_utxo_root(&utxos2));
     }
 

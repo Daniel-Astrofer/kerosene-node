@@ -47,9 +47,7 @@ impl WithdrawalStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            WithdrawalStatus::Confirmed
-                | WithdrawalStatus::Failed
-                | WithdrawalStatus::Replaced
+            WithdrawalStatus::Confirmed | WithdrawalStatus::Failed | WithdrawalStatus::Replaced
         )
     }
 
@@ -65,7 +63,11 @@ impl WithdrawalStatus {
             (WithdrawalStatus::Confirming, WithdrawalStatus::Confirmed) => true,
 
             // Failure from any non-terminal, non-confirmed state
-            (s, WithdrawalStatus::Failed) if !s.is_terminal() && *s != WithdrawalStatus::Confirmed => true,
+            (s, WithdrawalStatus::Failed)
+                if !s.is_terminal() && *s != WithdrawalStatus::Confirmed =>
+            {
+                true
+            }
 
             // RBF replacement
             (WithdrawalStatus::Broadcast, WithdrawalStatus::Replaced) => true,
@@ -168,18 +170,10 @@ pub trait WithdrawalStore: Send + Sync {
     ) -> Result<(), LedgerError>;
 
     /// Set the PSBT commitment for a withdrawal.
-    async fn set_psbt(
-        &self,
-        id: &str,
-        commitment: PsbtCommitment,
-    ) -> Result<(), LedgerError>;
+    async fn set_psbt(&self, id: &str, commitment: PsbtCommitment) -> Result<(), LedgerError>;
 
     /// Set the broadcast transaction ID for a withdrawal.
-    async fn set_broadcast_txid(
-        &self,
-        id: &str,
-        txid: &str,
-    ) -> Result<(), LedgerError>;
+    async fn set_broadcast_txid(&self, id: &str, txid: &str) -> Result<(), LedgerError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,9 +225,9 @@ impl WithdrawalStore for InMemoryWithdrawalStore {
         bucket: u64,
     ) -> Result<(), LedgerError> {
         let mut inner = self.inner.lock().unwrap();
-        let record = inner.get_mut(id).ok_or_else(|| {
-            LedgerError::WithdrawalNotFound(id.to_string())
-        })?;
+        let record = inner
+            .get_mut(id)
+            .ok_or_else(|| LedgerError::WithdrawalNotFound(id.to_string()))?;
 
         if !record.status.can_transition_to(status) {
             return Err(LedgerError::InvalidStateTransition(format!(
@@ -259,9 +253,9 @@ impl WithdrawalStore for InMemoryWithdrawalStore {
         auth: SettlementAuthorization,
     ) -> Result<(), LedgerError> {
         let mut inner = self.inner.lock().unwrap();
-        let record = inner.get_mut(id).ok_or_else(|| {
-            LedgerError::WithdrawalNotFound(id.to_string())
-        })?;
+        let record = inner
+            .get_mut(id)
+            .ok_or_else(|| LedgerError::WithdrawalNotFound(id.to_string()))?;
 
         if record.status != WithdrawalStatus::Reserved {
             return Err(LedgerError::InvalidStateTransition(format!(
@@ -275,29 +269,21 @@ impl WithdrawalStore for InMemoryWithdrawalStore {
         Ok(())
     }
 
-    async fn set_psbt(
-        &self,
-        id: &str,
-        commitment: PsbtCommitment,
-    ) -> Result<(), LedgerError> {
+    async fn set_psbt(&self, id: &str, commitment: PsbtCommitment) -> Result<(), LedgerError> {
         let mut inner = self.inner.lock().unwrap();
-        let record = inner.get_mut(id).ok_or_else(|| {
-            LedgerError::WithdrawalNotFound(id.to_string())
-        })?;
+        let record = inner
+            .get_mut(id)
+            .ok_or_else(|| LedgerError::WithdrawalNotFound(id.to_string()))?;
 
         record.psbt_commitment = Some(commitment);
         Ok(())
     }
 
-    async fn set_broadcast_txid(
-        &self,
-        id: &str,
-        txid: &str,
-    ) -> Result<(), LedgerError> {
+    async fn set_broadcast_txid(&self, id: &str, txid: &str) -> Result<(), LedgerError> {
         let mut inner = self.inner.lock().unwrap();
-        let record = inner.get_mut(id).ok_or_else(|| {
-            LedgerError::WithdrawalNotFound(id.to_string())
-        })?;
+        let record = inner
+            .get_mut(id)
+            .ok_or_else(|| LedgerError::WithdrawalNotFound(id.to_string()))?;
 
         // Once a txid is set, it should not be changed
         if record.broadcast_txid.is_some() {
@@ -318,8 +304,12 @@ mod tests {
 
     fn sample_withdrawal() -> WithdrawalRecord {
         WithdrawalRecord::new(
-            "wd-1", "intent-commit-1", "account-1", 100_000,
-            "bc1qxyz", 100,
+            "wd-1",
+            "intent-commit-1",
+            "account-1",
+            100_000,
+            "bc1qxyz",
+            100,
         )
     }
 
@@ -338,23 +328,38 @@ mod tests {
         let store = InMemoryWithdrawalStore::new();
         store.create(sample_withdrawal()).await.unwrap();
 
-        store.update_status("wd-1", WithdrawalStatus::Authorized, 105).await.unwrap();
+        store
+            .update_status("wd-1", WithdrawalStatus::Authorized, 105)
+            .await
+            .unwrap();
         let wd = store.get("wd-1").await.unwrap().unwrap();
         assert_eq!(wd.status, WithdrawalStatus::Authorized);
 
-        store.update_status("wd-1", WithdrawalStatus::Signing, 110).await.unwrap();
+        store
+            .update_status("wd-1", WithdrawalStatus::Signing, 110)
+            .await
+            .unwrap();
         let wd = store.get("wd-1").await.unwrap().unwrap();
         assert_eq!(wd.status, WithdrawalStatus::Signing);
 
-        store.update_status("wd-1", WithdrawalStatus::Broadcast, 115).await.unwrap();
+        store
+            .update_status("wd-1", WithdrawalStatus::Broadcast, 115)
+            .await
+            .unwrap();
         let wd = store.get("wd-1").await.unwrap().unwrap();
         assert_eq!(wd.status, WithdrawalStatus::Broadcast);
 
-        store.update_status("wd-1", WithdrawalStatus::Confirming, 120).await.unwrap();
+        store
+            .update_status("wd-1", WithdrawalStatus::Confirming, 120)
+            .await
+            .unwrap();
         let wd = store.get("wd-1").await.unwrap().unwrap();
         assert_eq!(wd.status, WithdrawalStatus::Confirming);
 
-        store.update_status("wd-1", WithdrawalStatus::Confirmed, 125).await.unwrap();
+        store
+            .update_status("wd-1", WithdrawalStatus::Confirmed, 125)
+            .await
+            .unwrap();
         let wd = store.get("wd-1").await.unwrap().unwrap();
         assert_eq!(wd.status, WithdrawalStatus::Confirmed);
     }
@@ -363,7 +368,10 @@ mod tests {
     async fn status_can_transition_to_failed() {
         let store = InMemoryWithdrawalStore::new();
         store.create(sample_withdrawal()).await.unwrap();
-        store.update_status("wd-1", WithdrawalStatus::Failed, 105).await.unwrap();
+        store
+            .update_status("wd-1", WithdrawalStatus::Failed, 105)
+            .await
+            .unwrap();
         let wd = store.get("wd-1").await.unwrap().unwrap();
         assert_eq!(wd.status, WithdrawalStatus::Failed);
     }
@@ -385,9 +393,17 @@ mod tests {
         let store = InMemoryWithdrawalStore::new();
         store.create(sample_withdrawal()).await.unwrap();
 
-        let qc = crate::certificate::QuorumCertificate::single_node(
-            "cluster-1", 1, 0, 1, "cmd-hash", "prev-root", "result-root", "node-1", "sig",
-        );
+        let qc = crate::tests::helpers::make_signed_qc(
+            "cluster-1",
+            1,
+            0,
+            1,
+            "cmd-hash",
+            "prev-root",
+            "result-root",
+            "node-1",
+        )
+        .0;
         let auth = SettlementAuthorization {
             intent_commitment: "intent-commit-1".into(),
             command_hash: "cmd-hash".into(),

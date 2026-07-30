@@ -98,8 +98,11 @@ impl UtxoStore for InMemoryUtxoStore {
 
     async fn list_by_state(&self, state: OnchainState) -> Result<Vec<UtxoEntry>, LedgerError> {
         let entries = self.inner.lock().unwrap();
-        let mut result: Vec<UtxoEntry> =
-            entries.iter().filter(|e| e.state == state).cloned().collect();
+        let mut result: Vec<UtxoEntry> = entries
+            .iter()
+            .filter(|e| e.state == state)
+            .cloned()
+            .collect();
         // Sort for determinism
         result.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
         Ok(result)

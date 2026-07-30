@@ -50,6 +50,7 @@ impl JournalEntry {
     /// Computes the SHA-256 entry hash from the entry's fields and the
     /// previous entry hash (if any).
     pub fn compute_entry_hash(
+        entry_id: &str,
         sequence: u64,
         description: &str,
         debits: &[Posting],
@@ -62,7 +63,7 @@ impl JournalEntry {
         let credits_hash = Self::hash_postings(credits);
         let prev = previous_entry_hash.unwrap_or("");
         let material = format!(
-            "{sequence}|{description}|{debits_hash}|{credits_hash}|{prev}|{timestamp_bucket}"
+            "{entry_id}|{sequence}|{description}|{debits_hash}|{credits_hash}|{prev}|{timestamp_bucket}"
         );
         hasher.update(material.as_bytes());
         hex::encode(hasher.finalize())
@@ -193,9 +194,7 @@ impl InMemoryLedger {
     }
 
     /// Computes a SHA-256 hash of the full trial balance.
-    fn compute_trial_balance_hash(
-        balances: &HashMap<StandardAccount, AccountBalance>,
-    ) -> String {
+    fn compute_trial_balance_hash(balances: &HashMap<StandardAccount, AccountBalance>) -> String {
         let mut hasher = Sha256::new();
         let mut accounts: Vec<_> = balances.keys().collect();
         accounts.sort_by_key(|a| *a);
@@ -262,11 +261,9 @@ impl LedgerPort for InMemoryLedger {
         }
 
         // 5. Compute hash and chain
-        let prev_hash = inner
-            .entries
-            .last()
-            .map(|e| e.entry_hash.as_str());
+        let prev_hash = inner.entries.last().map(|e| e.entry_hash.as_str());
         let computed_hash = JournalEntry::compute_entry_hash(
+            &entry.entry_id,
             entry.sequence,
             &entry.description,
             &entry.debits,
@@ -309,12 +306,12 @@ impl LedgerPort for InMemoryLedger {
                 .get_mut(&posting.account)
                 .ok_or(LedgerError::AccountNotFound(posting.account))?;
             let amount = posting.amount_sats as u128;
-            bal.total_debits_sats = bal
-                .total_debits_sats
-                .checked_add(amount)
-                .ok_or(LedgerError::BalanceOverflow {
-                    account: posting.account,
-                })?;
+            bal.total_debits_sats =
+                bal.total_debits_sats
+                    .checked_add(amount)
+                    .ok_or(LedgerError::BalanceOverflow {
+                        account: posting.account,
+                    })?;
             bal.net_balance_sats = (bal.total_debits_sats as i128)
                 .checked_sub(bal.total_credits_sats as i128)
                 .ok_or(LedgerError::BalanceOverflow {
@@ -329,12 +326,12 @@ impl LedgerPort for InMemoryLedger {
                 .get_mut(&posting.account)
                 .ok_or(LedgerError::AccountNotFound(posting.account))?;
             let amount = posting.amount_sats as u128;
-            bal.total_credits_sats = bal
-                .total_credits_sats
-                .checked_add(amount)
-                .ok_or(LedgerError::BalanceOverflow {
-                    account: posting.account,
-                })?;
+            bal.total_credits_sats =
+                bal.total_credits_sats
+                    .checked_add(amount)
+                    .ok_or(LedgerError::BalanceOverflow {
+                        account: posting.account,
+                    })?;
             bal.net_balance_sats = (bal.total_debits_sats as i128)
                 .checked_sub(bal.total_credits_sats as i128)
                 .ok_or(LedgerError::BalanceOverflow {
@@ -385,7 +382,9 @@ impl LedgerPort for InMemoryLedger {
             trial_balance_hash,
         };
 
-        inner.receipts.insert(entry.entry_id.clone(), receipt.clone());
+        inner
+            .receipts
+            .insert(entry.entry_id.clone(), receipt.clone());
 
         Ok(receipt)
     }

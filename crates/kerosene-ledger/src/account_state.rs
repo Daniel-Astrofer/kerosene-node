@@ -40,10 +40,11 @@ impl AccountState {
         }
     }
 
-    /// Returns the effective spendable balance: `available_sats - reserved_sats`.
-    /// Saturates at zero (never negative).
+    /// Returns the effective spendable balance.
+    /// Since `available_sats` already excludes reserved funds, this is simply
+    /// `available_sats`.  Saturates at zero (never negative).
     pub fn spendable(&self) -> u64 {
-        self.available_sats.saturating_sub(self.reserved_sats)
+        self.available_sats
     }
 
     /// Checks the expected version against the current version.
@@ -62,12 +63,12 @@ impl AccountState {
     /// Applies a credit (increases available balance).
     /// Increments version on success.
     pub fn apply_credit(&mut self, amount: u64) -> Result<(), LedgerError> {
-        self.available_sats = self
-            .available_sats
-            .checked_add(amount)
-            .ok_or_else(|| LedgerError::InvariantViolation(format!(
-                "balance overflow on credit for account {}", self.account_id
-            )))?;
+        self.available_sats = self.available_sats.checked_add(amount).ok_or_else(|| {
+            LedgerError::InvariantViolation(format!(
+                "balance overflow on credit for account {}",
+                self.account_id
+            ))
+        })?;
         self.version += 1;
         Ok(())
     }
@@ -83,12 +84,12 @@ impl AccountState {
                 needed: amount,
             });
         }
-        self.available_sats = self
-            .available_sats
-            .checked_sub(amount)
-            .ok_or_else(|| LedgerError::InvariantViolation(format!(
-                "balance underflow on debit for account {}", self.account_id
-            )))?;
+        self.available_sats = self.available_sats.checked_sub(amount).ok_or_else(|| {
+            LedgerError::InvariantViolation(format!(
+                "balance underflow on debit for account {}",
+                self.account_id
+            ))
+        })?;
         self.version += 1;
         Ok(())
     }
@@ -104,18 +105,18 @@ impl AccountState {
                 needed: amount,
             });
         }
-        self.available_sats = self
-            .available_sats
-            .checked_sub(amount)
-            .ok_or_else(|| LedgerError::InvariantViolation(format!(
-                "balance underflow on reserve for account {}", self.account_id
-            )))?;
-        self.reserved_sats = self
-            .reserved_sats
-            .checked_add(amount)
-            .ok_or_else(|| LedgerError::InvariantViolation(format!(
-                "reserved overflow for account {}", self.account_id
-            )))?;
+        self.available_sats = self.available_sats.checked_sub(amount).ok_or_else(|| {
+            LedgerError::InvariantViolation(format!(
+                "balance underflow on reserve for account {}",
+                self.account_id
+            ))
+        })?;
+        self.reserved_sats = self.reserved_sats.checked_add(amount).ok_or_else(|| {
+            LedgerError::InvariantViolation(format!(
+                "reserved overflow for account {}",
+                self.account_id
+            ))
+        })?;
         self.version += 1;
         Ok(())
     }
@@ -129,18 +130,18 @@ impl AccountState {
                 amount, self.reserved_sats, self.account_id
             )));
         }
-        self.reserved_sats = self
-            .reserved_sats
-            .checked_sub(amount)
-            .ok_or_else(|| LedgerError::InvariantViolation(format!(
-                "reserved underflow on release for account {}", self.account_id
-            )))?;
-        self.available_sats = self
-            .available_sats
-            .checked_add(amount)
-            .ok_or_else(|| LedgerError::InvariantViolation(format!(
-                "available overflow on release for account {}", self.account_id
-            )))?;
+        self.reserved_sats = self.reserved_sats.checked_sub(amount).ok_or_else(|| {
+            LedgerError::InvariantViolation(format!(
+                "reserved underflow on release for account {}",
+                self.account_id
+            ))
+        })?;
+        self.available_sats = self.available_sats.checked_add(amount).ok_or_else(|| {
+            LedgerError::InvariantViolation(format!(
+                "available overflow on release for account {}",
+                self.account_id
+            ))
+        })?;
         self.version += 1;
         Ok(())
     }
@@ -155,12 +156,12 @@ impl AccountState {
                 amount, self.reserved_sats, self.account_id
             )));
         }
-        self.reserved_sats = self
-            .reserved_sats
-            .checked_sub(amount)
-            .ok_or_else(|| LedgerError::InvariantViolation(format!(
-                "reserved underflow on consume for account {}", self.account_id
-            )))?;
+        self.reserved_sats = self.reserved_sats.checked_sub(amount).ok_or_else(|| {
+            LedgerError::InvariantViolation(format!(
+                "reserved underflow on consume for account {}",
+                self.account_id
+            ))
+        })?;
         self.version += 1;
         Ok(())
     }
@@ -230,7 +231,7 @@ mod tests {
         acc.apply_reserve(60).unwrap();
         assert_eq!(acc.available_sats, 40);
         assert_eq!(acc.reserved_sats, 60);
-        assert_eq!(acc.spendable(), 0); // reserved funds are not spendable
+        assert_eq!(acc.spendable(), 40); // reserved funds excluded from available
         assert_eq!(acc.version, 2);
     }
 
@@ -296,12 +297,12 @@ mod tests {
         let mut acc = AccountState::new("test");
         // With no balance, spendable is 0
         assert_eq!(acc.spendable(), 0);
-        // With only reserved, spendable is 0
+        // With only reserved, spendable is 0 (no available)
         acc.reserved_sats = 100;
         assert_eq!(acc.spendable(), 0);
-        // With available > reserved
+        // With available > 0 (reserved is excluded from available_sats)
         acc.available_sats = 200;
-        assert_eq!(acc.spendable(), 100);
+        assert_eq!(acc.spendable(), 200); // spendable = available_sats
     }
 
     #[test]

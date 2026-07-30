@@ -176,10 +176,7 @@ pub trait SyncManager: Send + Sync {
     async fn start_catch_up(&self, target_sequence: u64) -> Result<(), LedgerError>;
 
     /// Requests a certified snapshot at the given sequence from a peer.
-    async fn request_snapshot(
-        &self,
-        sequence: u64,
-    ) -> Result<CertifiedSnapshot, LedgerError>;
+    async fn request_snapshot(&self, sequence: u64) -> Result<CertifiedSnapshot, LedgerError>;
 
     /// Marks this node as quarantined with the given reason.
     async fn mark_quarantined(&self, reason: &str) -> Result<(), LedgerError>;
@@ -223,9 +220,7 @@ pub async fn recover_divergence(
     state: &mut LedgerState,
     commands: &[LedgerCommand],
 ) -> Result<(), LedgerError> {
-    sync_mgr
-        .mark_quarantined("divergence detected")
-        .await?;
+    sync_mgr.mark_quarantined("divergence detected").await?;
 
     // Find the latest certified snapshot
     let snapshot = snapshot_store
@@ -277,9 +272,7 @@ pub async fn execute_catch_up(
         let restored_state = snapshot_store.install_snapshot(&snapshot).await?;
         *state = restored_state;
 
-        sync_mgr
-            .start_catch_up(from_sequence)
-            .await?;
+        sync_mgr.start_catch_up(from_sequence).await?;
 
         // Replay remaining commands
         for cmd in commands {

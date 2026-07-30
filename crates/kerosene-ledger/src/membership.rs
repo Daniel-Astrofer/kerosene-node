@@ -70,21 +70,13 @@ pub trait MembershipStore: Send + Sync {
 
     /// Promotes a node to the target role (validated by
     /// [`validate_role_transition`]).
-    async fn promote(
-        &self,
-        node_id: &str,
-        target_role: NodeRole,
-    ) -> Result<(), LedgerError>;
+    async fn promote(&self, node_id: &str, target_role: NodeRole) -> Result<(), LedgerError>;
 
     /// Removes a node from the membership store entirely.
     async fn remove_node(&self, node_id: &str) -> Result<(), LedgerError>;
 
     /// Updates the heartbeat timestamp for a node.
-    async fn update_heartbeat(
-        &self,
-        node_id: &str,
-        bucket: u64,
-    ) -> Result<(), LedgerError>;
+    async fn update_heartbeat(&self, node_id: &str, bucket: u64) -> Result<(), LedgerError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,21 +124,14 @@ impl MembershipStore for InMemoryMembershipStore {
 
     async fn list_by_role(&self, role: NodeRole) -> Result<Vec<NodeMembership>, LedgerError> {
         let map = self.inner.lock().unwrap();
-        let mut nodes: Vec<NodeMembership> = map
-            .values()
-            .filter(|n| n.role == role)
-            .cloned()
-            .collect();
+        let mut nodes: Vec<NodeMembership> =
+            map.values().filter(|n| n.role == role).cloned().collect();
         // Sort by node_id for determinism
         nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         Ok(nodes)
     }
 
-    async fn promote(
-        &self,
-        node_id: &str,
-        target_role: NodeRole,
-    ) -> Result<(), LedgerError> {
+    async fn promote(&self, node_id: &str, target_role: NodeRole) -> Result<(), LedgerError> {
         let mut map = self.inner.lock().unwrap();
         let node = map
             .get_mut(node_id)
@@ -164,11 +149,7 @@ impl MembershipStore for InMemoryMembershipStore {
         Ok(())
     }
 
-    async fn update_heartbeat(
-        &self,
-        node_id: &str,
-        bucket: u64,
-    ) -> Result<(), LedgerError> {
+    async fn update_heartbeat(&self, node_id: &str, bucket: u64) -> Result<(), LedgerError> {
         let mut map = self.inner.lock().unwrap();
         let node = map
             .get_mut(node_id)
@@ -190,10 +171,7 @@ impl MembershipStore for InMemoryMembershipStore {
 /// - `LEARNER → VOTER`: after reaching current sequence + stability window
 /// - `VOTER → OBSERVER`: demotion
 /// - Any → `UNTRUSTED`: removal
-pub fn validate_role_transition(
-    current: NodeRole,
-    target: NodeRole,
-) -> Result<(), LedgerError> {
+pub fn validate_role_transition(current: NodeRole, target: NodeRole) -> Result<(), LedgerError> {
     use NodeRole::*;
 
     let valid = match (current, target) {
@@ -322,10 +300,7 @@ impl VotingGate {
         }
 
         if self.sync_status.sync_status != crate::replication::SyncStatus::Healthy {
-            reasons.push(format!(
-                "sync status is {:?}",
-                self.sync_status.sync_status
-            ));
+            reasons.push(format!("sync status is {:?}", self.sync_status.sync_status));
         }
 
         reasons
@@ -573,10 +548,7 @@ mod tests {
             .await
             .unwrap();
 
-        store
-            .promote("node-1", NodeRole::Observer)
-            .await
-            .unwrap();
+        store.promote("node-1", NodeRole::Observer).await.unwrap();
         let fetched = store.get_node("node-1").await.unwrap().unwrap();
         assert_eq!(fetched.role, NodeRole::Observer);
     }
@@ -589,10 +561,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = store
-            .promote("node-1", NodeRole::Voter)
-            .await
-            .unwrap_err();
+        let err = store.promote("node-1", NodeRole::Voter).await.unwrap_err();
         assert!(matches!(err, LedgerError::InvalidRoleTransition { .. }));
     }
 

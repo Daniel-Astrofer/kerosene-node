@@ -37,9 +37,7 @@ pub fn check_reserved_not_exceed_available(view: &BalanceView) -> Result<(), Led
 }
 
 /// Checks that pending outgoing does not exceed internal available.
-pub fn check_pending_outgoing_not_exceed_available(
-    view: &BalanceView,
-) -> Result<(), LedgerError> {
+pub fn check_pending_outgoing_not_exceed_available(view: &BalanceView) -> Result<(), LedgerError> {
     if view.pending_outgoing_sats > view.internal_available_sats {
         return Err(LedgerError::PendingOutgoingExceedsAvailable {
             outgoing: view.pending_outgoing_sats,
@@ -60,8 +58,7 @@ pub fn check_spendable_consistency(view: &BalanceView) -> Result<(), LedgerError
             || view.onchain_unconfirmed_sats != 0
         {
             return Err(LedgerError::InvariantViolation(
-                "spendable_by_kerosene is 0 but Kerosene-controlled balances are non-zero"
-                    .into(),
+                "spendable_by_kerosene is 0 but Kerosene-controlled balances are non-zero".into(),
             ));
         }
     }
@@ -148,9 +145,7 @@ mod tests {
 
     #[test]
     fn pending_outgoing_not_exceed_available_passes() {
-        assert!(
-            check_pending_outgoing_not_exceed_available(&valid_view()).is_ok()
-        );
+        assert!(check_pending_outgoing_not_exceed_available(&valid_view()).is_ok());
     }
 
     #[test]
@@ -160,9 +155,7 @@ mod tests {
             pending_outgoing_sats: 200,
             ..valid_view()
         };
-        assert!(
-            check_pending_outgoing_not_exceed_available(&v).is_err()
-        );
+        assert!(check_pending_outgoing_not_exceed_available(&v).is_err());
     }
 
     #[test]

@@ -180,9 +180,7 @@ impl SettlementAuthorization {
             ));
         }
         if self.nonce.is_empty() {
-            return Err(LedgerError::AuthorizationInvalid(
-                "nonce is empty".into(),
-            ));
+            return Err(LedgerError::AuthorizationInvalid("nonce is empty".into()));
         }
         self.quorum_certificate.verify_basic()?;
         Ok(())
@@ -196,10 +194,7 @@ impl SettlementAuthorization {
     ///
     /// Note: expiration of the authorization itself is checked via `is_expired()`
     /// by the caller, which has access to the current time bucket.
-    pub fn verify_against_reservation(
-        &self,
-        reservation: &Reservation,
-    ) -> Result<(), LedgerError> {
+    pub fn verify_against_reservation(&self, reservation: &Reservation) -> Result<(), LedgerError> {
         if reservation.is_terminal() {
             return Err(LedgerError::AuthorizationInvalid(format!(
                 "reservation {} is in terminal state {:?}",
@@ -255,10 +250,7 @@ impl SettlementValidator {
         auth.verify_basic()?;
 
         // 2. Intent not yet consumed (anti-replay via consumed_intents)
-        if state
-            .consumed_intents
-            .contains(&auth.intent_commitment)
-        {
+        if state.consumed_intents.contains(&auth.intent_commitment) {
             return Err(LedgerError::AuthorizationInvalid(format!(
                 "intent {} already consumed",
                 auth.intent_commitment
@@ -376,10 +368,7 @@ pub enum VaultVerificationError {
     IntentAlreadyConsumed(String),
 
     #[error("epoch expired: auth_epoch {auth_epoch}, max_drift {max_drift}")]
-    EpochExpired {
-        auth_epoch: u64,
-        max_drift: u64,
-    },
+    EpochExpired { auth_epoch: u64, max_drift: u64 },
 
     #[error("PSBT hash mismatch: expected {expected_hash}, actual {actual_hash}")]
     PsbtMismatch {
@@ -388,16 +377,10 @@ pub enum VaultVerificationError {
     },
 
     #[error("fee {fee_sats} exceeds policy max {max_fee_sats}")]
-    FeeExceedsPolicy {
-        fee_sats: u64,
-        max_fee_sats: u64,
-    },
+    FeeExceedsPolicy { fee_sats: u64, max_fee_sats: u64 },
 
     #[error("authorization expired at {expires_at}, current time {now}")]
-    AuthorizationExpired {
-        expires_at: u64,
-        now: u64,
-    },
+    AuthorizationExpired { expires_at: u64, now: u64 },
 
     #[error("nonce reused: {0}")]
     NonceReused(String),

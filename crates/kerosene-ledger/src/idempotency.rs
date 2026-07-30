@@ -46,13 +46,7 @@ mod tests {
 
     #[test]
     fn create_idempotency_record() {
-        let rec = IdempotencyRecord::new(
-            "cmd-1",
-            "hash-abc",
-            "result-xyz",
-            42,
-            "root-123",
-        );
+        let rec = IdempotencyRecord::new("cmd-1", "hash-abc", "result-xyz", 42, "root-123");
         assert_eq!(rec.command_id, "cmd-1");
         assert_eq!(rec.command_hash, "hash-abc");
         assert_eq!(rec.result_hash, "result-xyz");
@@ -62,13 +56,7 @@ mod tests {
 
     #[test]
     fn idempotency_record_serde_roundtrip() {
-        let rec = IdempotencyRecord::new(
-            "cmd-1",
-            "hash-abc",
-            "result-xyz",
-            1,
-            "root-123",
-        );
+        let rec = IdempotencyRecord::new("cmd-1", "hash-abc", "result-xyz", 1, "root-123");
         let json = serde_json::to_string(&rec).unwrap();
         let deserialized: IdempotencyRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(rec, deserialized);

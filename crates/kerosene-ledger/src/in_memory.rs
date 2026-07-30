@@ -32,7 +32,10 @@ impl InMemoryVersionedAccountStore {
 
     /// Creates a new store pre-populated with the given accounts.
     pub fn with_accounts(accounts: Vec<AccountState>) -> Self {
-        let map: HashMap<_, _> = accounts.into_iter().map(|a| (a.account_id.clone(), a)).collect();
+        let map: HashMap<_, _> = accounts
+            .into_iter()
+            .map(|a| (a.account_id.clone(), a))
+            .collect();
         Self {
             inner: Mutex::new(map),
         }
@@ -73,10 +76,7 @@ impl VersionedAccountStore for InMemoryVersionedAccountStore {
                     current: 0,
                 });
             }
-            map.insert(
-                cmd.account_id.clone(),
-                AccountState::new(&cmd.account_id),
-            );
+            map.insert(cmd.account_id.clone(), AccountState::new(&cmd.account_id));
             map.get_mut(&cmd.account_id).unwrap()
         };
 
@@ -99,22 +99,22 @@ impl VersionedAccountStore for InMemoryVersionedAccountStore {
         let mut map = self.inner.lock().unwrap();
 
         // Clone both states to avoid borrow checker issues
-        let src = map
-            .get(&cmd.source_account_id)
+        let src = map.get(&cmd.source_account_id).cloned().ok_or_else(|| {
+            LedgerError::AtomicTransferFailed(format!(
+                "source account '{}' not found",
+                cmd.source_account_id
+            ))
+        })?;
+
+        let dst = map
+            .get(&cmd.destination_account_id)
             .cloned()
             .ok_or_else(|| {
                 LedgerError::AtomicTransferFailed(format!(
-                    "source account '{}' not found",
-                    cmd.source_account_id
+                    "destination account '{}' not found",
+                    cmd.destination_account_id
                 ))
             })?;
-
-        let dst = map.get(&cmd.destination_account_id).cloned().ok_or_else(|| {
-            LedgerError::AtomicTransferFailed(format!(
-                "destination account '{}' not found",
-                cmd.destination_account_id
-            ))
-        })?;
 
         // Validate versions
         src.check_version(cmd.source_expected_version)?;
@@ -214,10 +214,7 @@ impl ReservationStore for InMemoryReservationStore {
         let mut expired_count = 0u64;
         let to_expire: Vec<String> = map
             .iter()
-            .filter(|(_, r)| {
-                r.expires_at_bucket <= current_bucket
-                    && !r.is_terminal()
-            })
+            .filter(|(_, r)| r.expires_at_bucket <= current_bucket && !r.is_terminal())
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -362,10 +359,37 @@ mod tests {
     #[tokio::test]
     async fn apply_release_restores_balance() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "carol", 0, BalanceOperation::Credit, 500, 1)).await.unwrap();
-        store.apply_command(&BalanceCommand::new("c2", "carol", 1, BalanceOperation::Reserve, 200, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "carol",
+                0,
+                BalanceOperation::Credit,
+                500,
+                1,
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c2",
+                "carol",
+                1,
+                BalanceOperation::Reserve,
+                200,
+                1,
+            ))
+            .await
+            .unwrap();
 
-        let release = BalanceCommand::new("c3", "carol", 2, BalanceOperation::ReleaseReservation, 100, 1);
+        let release = BalanceCommand::new(
+            "c3",
+            "carol",
+            2,
+            BalanceOperation::ReleaseReservation,
+            100,
+            1,
+        );
         let state = store.apply_command(&release).await.unwrap();
         assert_eq!(state.available_sats, 400);
         assert_eq!(state.reserved_sats, 100);
@@ -374,7 +398,17 @@ mod tests {
     #[tokio::test]
     async fn concurrent_debits_dont_overflow() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "dave", 0, BalanceOperation::Credit, 1000, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "dave",
+                0,
+                BalanceOperation::Credit,
+                1000,
+                1,
+            ))
+            .await
+            .unwrap();
 
         // Simulate two concurrent debits both seeing version 1
         let debit1 = BalanceCommand::new("c2", "dave", 1, BalanceOperation::Debit, 600, 1);
@@ -406,8 +440,28 @@ mod tests {
     #[tokio::test]
     async fn valid_transfer_updates_both_accounts() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "alice", 0, BalanceOperation::Credit, 1000, 1)).await.unwrap();
-        store.apply_command(&BalanceCommand::new("c2", "bob", 0, BalanceOperation::Credit, 500, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "alice",
+                0,
+                BalanceOperation::Credit,
+                1000,
+                1,
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c2",
+                "bob",
+                0,
+                BalanceOperation::Credit,
+                500,
+                1,
+            ))
+            .await
+            .unwrap();
 
         let transfer = InternalTransferCommand::new("tx1", "alice", 1, "bob", 1, 300, "auth-1");
         let (src, dst) = store.apply_transfer(&transfer).await.unwrap();
@@ -421,8 +475,28 @@ mod tests {
     #[tokio::test]
     async fn transfer_insufficient_source_balance_rejected() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "alice", 0, BalanceOperation::Credit, 100, 1)).await.unwrap();
-        store.apply_command(&BalanceCommand::new("c2", "bob", 0, BalanceOperation::Credit, 500, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "alice",
+                0,
+                BalanceOperation::Credit,
+                100,
+                1,
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c2",
+                "bob",
+                0,
+                BalanceOperation::Credit,
+                500,
+                1,
+            ))
+            .await
+            .unwrap();
 
         let transfer = InternalTransferCommand::new("tx1", "alice", 1, "bob", 1, 300, "auth-1");
         let err = store.apply_transfer(&transfer).await.unwrap_err();
@@ -438,8 +512,28 @@ mod tests {
     #[tokio::test]
     async fn transfer_version_mismatch_on_source_rejected() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "alice", 0, BalanceOperation::Credit, 1000, 1)).await.unwrap();
-        store.apply_command(&BalanceCommand::new("c2", "bob", 0, BalanceOperation::Credit, 500, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "alice",
+                0,
+                BalanceOperation::Credit,
+                1000,
+                1,
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c2",
+                "bob",
+                0,
+                BalanceOperation::Credit,
+                500,
+                1,
+            ))
+            .await
+            .unwrap();
 
         let transfer = InternalTransferCommand::new("tx1", "alice", 0, "bob", 1, 300, "auth-1");
         let err = store.apply_transfer(&transfer).await.unwrap_err();
@@ -449,8 +543,28 @@ mod tests {
     #[tokio::test]
     async fn transfer_version_mismatch_on_dest_rejected() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "alice", 0, BalanceOperation::Credit, 1000, 1)).await.unwrap();
-        store.apply_command(&BalanceCommand::new("c2", "bob", 0, BalanceOperation::Credit, 500, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "alice",
+                0,
+                BalanceOperation::Credit,
+                1000,
+                1,
+            ))
+            .await
+            .unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c2",
+                "bob",
+                0,
+                BalanceOperation::Credit,
+                500,
+                1,
+            ))
+            .await
+            .unwrap();
 
         let transfer = InternalTransferCommand::new("tx1", "alice", 1, "bob", 0, 300, "auth-1");
         let err = store.apply_transfer(&transfer).await.unwrap_err();
@@ -460,9 +574,20 @@ mod tests {
     #[tokio::test]
     async fn transfer_source_not_found_rejected() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "bob", 0, BalanceOperation::Credit, 500, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "bob",
+                0,
+                BalanceOperation::Credit,
+                500,
+                1,
+            ))
+            .await
+            .unwrap();
 
-        let transfer = InternalTransferCommand::new("tx1", "nonexistent", 0, "bob", 1, 100, "auth-1");
+        let transfer =
+            InternalTransferCommand::new("tx1", "nonexistent", 0, "bob", 1, 100, "auth-1");
         let err = store.apply_transfer(&transfer).await.unwrap_err();
         assert!(matches!(err, LedgerError::AtomicTransferFailed(_)));
     }
@@ -470,9 +595,20 @@ mod tests {
     #[tokio::test]
     async fn transfer_dest_not_found_rejected() {
         let store = InMemoryVersionedAccountStore::new();
-        store.apply_command(&BalanceCommand::new("c1", "alice", 0, BalanceOperation::Credit, 1000, 1)).await.unwrap();
+        store
+            .apply_command(&BalanceCommand::new(
+                "c1",
+                "alice",
+                0,
+                BalanceOperation::Credit,
+                1000,
+                1,
+            ))
+            .await
+            .unwrap();
 
-        let transfer = InternalTransferCommand::new("tx1", "alice", 1, "nonexistent", 0, 100, "auth-1");
+        let transfer =
+            InternalTransferCommand::new("tx1", "alice", 1, "nonexistent", 0, 100, "auth-1");
         let err = store.apply_transfer(&transfer).await.unwrap_err();
         assert!(matches!(err, LedgerError::AtomicTransferFailed(_)));
     }
@@ -506,11 +642,25 @@ mod tests {
         let r = Reservation::new("res-1", "alice", 500, 10, 100, "auth-1");
         store.create_reservation(r).await.unwrap();
 
-        store.transition("res-1", ReservationState::Prepared, ReservationState::Committed).await.unwrap();
+        store
+            .transition(
+                "res-1",
+                ReservationState::Prepared,
+                ReservationState::Committed,
+            )
+            .await
+            .unwrap();
         let fetched = store.get_reservation("res-1").await.unwrap().unwrap();
         assert_eq!(fetched.state, ReservationState::Committed);
 
-        store.transition("res-1", ReservationState::Committed, ReservationState::Consumed).await.unwrap();
+        store
+            .transition(
+                "res-1",
+                ReservationState::Committed,
+                ReservationState::Consumed,
+            )
+            .await
+            .unwrap();
         let fetched = store.get_reservation("res-1").await.unwrap().unwrap();
         assert_eq!(fetched.state, ReservationState::Consumed);
     }
@@ -522,7 +672,11 @@ mod tests {
         store.create_reservation(r).await.unwrap();
 
         let err = store
-            .transition("res-1", ReservationState::Committed, ReservationState::Consumed)
+            .transition(
+                "res-1",
+                ReservationState::Committed,
+                ReservationState::Consumed,
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, LedgerError::InvariantViolation(_)));
@@ -547,8 +701,22 @@ mod tests {
         store.create_reservation(r3).await.unwrap();
 
         // Manually transition r3 to consumed
-        store.transition("res-3", ReservationState::Prepared, ReservationState::Committed).await.unwrap();
-        store.transition("res-3", ReservationState::Committed, ReservationState::Consumed).await.unwrap();
+        store
+            .transition(
+                "res-3",
+                ReservationState::Prepared,
+                ReservationState::Committed,
+            )
+            .await
+            .unwrap();
+        store
+            .transition(
+                "res-3",
+                ReservationState::Committed,
+                ReservationState::Consumed,
+            )
+            .await
+            .unwrap();
 
         let count = store.expire_stale(25).await.unwrap();
         assert_eq!(count, 2); // res-1 and res-2 should expire

@@ -3,7 +3,6 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-
 use crate::certificate::CertifiedSnapshot;
 use crate::error::LedgerError;
 use crate::state_machine::LedgerState;
@@ -103,10 +102,7 @@ impl SnapshotStore for InMemorySnapshotStore {
 
         // Deserialise the state
         let state: LedgerState = serde_json::from_slice(&snapshot.state_bytes).map_err(|e| {
-            LedgerError::InvalidSignature(format!(
-                "failed to deserialize snapshot state: {}",
-                e
-            ))
+            LedgerError::InvalidSignature(format!("failed to deserialize snapshot state: {}", e))
         })?;
 
         // Verify the state root matches
@@ -125,11 +121,11 @@ impl SnapshotStore for InMemorySnapshotStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::certificate::QuorumCertificate;
     use crate::state_machine::MembershipView;
+    use crate::tests::helpers::make_signed_qc;
 
     fn create_test_snapshot(sequence: u64) -> CertifiedSnapshot {
-        let qc = QuorumCertificate::single_node(
+        let (qc, _pk_hex) = make_signed_qc(
             "cluster-1",
             1,
             0,
@@ -138,11 +134,9 @@ mod tests {
             "prev-root",
             "result-root",
             "node-1",
-            "sig",
         );
 
-        let state =
-            LedgerState::empty(MembershipView::single_node("cluster-1", "node-1"));
+        let state = LedgerState::empty(MembershipView::single_node("cluster-1", "node-1"));
         let state_root = crate::state_root::compute_state_root(&state);
         let state_bytes = serde_json::to_vec(&state).unwrap();
 
@@ -190,9 +184,18 @@ mod tests {
     #[tokio::test]
     async fn latest_is_highest_sequence() {
         let store = InMemorySnapshotStore::new();
-        store.save_snapshot(&create_test_snapshot(10)).await.unwrap();
-        store.save_snapshot(&create_test_snapshot(30)).await.unwrap();
-        store.save_snapshot(&create_test_snapshot(20)).await.unwrap();
+        store
+            .save_snapshot(&create_test_snapshot(10))
+            .await
+            .unwrap();
+        store
+            .save_snapshot(&create_test_snapshot(30))
+            .await
+            .unwrap();
+        store
+            .save_snapshot(&create_test_snapshot(20))
+            .await
+            .unwrap();
 
         let latest = store.latest_snapshot().await.unwrap().unwrap();
         assert_eq!(latest.sequence, 30);

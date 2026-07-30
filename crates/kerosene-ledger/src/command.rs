@@ -111,14 +111,7 @@ mod tests {
 
     #[test]
     fn create_balance_command() {
-        let cmd = BalanceCommand::new(
-            "cmd-1",
-            "account-1",
-            0,
-            BalanceOperation::Credit,
-            1000,
-            1,
-        );
+        let cmd = BalanceCommand::new("cmd-1", "account-1", 0, BalanceOperation::Credit, 1000, 1);
         assert_eq!(cmd.command_id, "cmd-1");
         assert_eq!(cmd.account_id, "account-1");
         assert_eq!(cmd.expected_version, 0);

@@ -160,14 +160,38 @@ impl MetricsCollector for BasicMetricsCollector {
             committed_sequence: committed,
             applied_sequence: applied,
             sequence_lag: lag,
-            state_root_mismatch_total: inner.counters.get("state_root_mismatch").copied().unwrap_or(0),
+            state_root_mismatch_total: inner
+                .counters
+                .get("state_root_mismatch")
+                .copied()
+                .unwrap_or(0),
             version_conflict_total: inner.counters.get("version_conflict").copied().unwrap_or(0),
-            idempotency_replay_total: inner.counters.get("idempotency_replay").copied().unwrap_or(0),
-            insufficient_funds_total: inner.counters.get("insufficient_funds").copied().unwrap_or(0),
-            reservation_conflict_total: inner.counters.get("reservation_conflict").copied().unwrap_or(0),
-            quorum_unavailable_total: inner.counters.get("quorum_unavailable").copied().unwrap_or(0),
+            idempotency_replay_total: inner
+                .counters
+                .get("idempotency_replay")
+                .copied()
+                .unwrap_or(0),
+            insufficient_funds_total: inner
+                .counters
+                .get("insufficient_funds")
+                .copied()
+                .unwrap_or(0),
+            reservation_conflict_total: inner
+                .counters
+                .get("reservation_conflict")
+                .copied()
+                .unwrap_or(0),
+            quorum_unavailable_total: inner
+                .counters
+                .get("quorum_unavailable")
+                .copied()
+                .unwrap_or(0),
             snapshot_install_total: inner.counters.get("snapshot_install").copied().unwrap_or(0),
-            divergence_recovery_total: inner.counters.get("divergence_recovery").copied().unwrap_or(0),
+            divergence_recovery_total: inner
+                .counters
+                .get("divergence_recovery")
+                .copied()
+                .unwrap_or(0),
             node_sync_status: inner.node_sync_status.clone(),
             total_accounts: inner.total_accounts,
             total_utxos: inner.total_utxos,
@@ -250,12 +274,8 @@ mod tests {
     #[tokio::test]
     async fn increment_counter_accumulates() {
         let collector = BasicMetricsCollector::new();
-        collector
-            .increment_counter("state_root_mismatch", 3)
-            .await;
-        collector
-            .increment_counter("state_root_mismatch", 2)
-            .await;
+        collector.increment_counter("state_root_mismatch", 3).await;
+        collector.increment_counter("state_root_mismatch", 2).await;
 
         let snapshot = collector.snapshot().await.unwrap();
         assert_eq!(snapshot.state_root_mismatch_total, 5);

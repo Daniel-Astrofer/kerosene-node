@@ -1,8 +1,8 @@
-use crate::certificate::{CertifiedSnapshot, QuorumCertificate};
+use crate::certificate::CertifiedSnapshot;
 use crate::error::LedgerError;
 use crate::membership::{
-    AdmissionFlow, InMemoryMembershipStore, MembershipGate, MembershipStore, NodeMembership,
-    NodeRole, VotingGate, validate_role_transition,
+    validate_role_transition, AdmissionFlow, InMemoryMembershipStore, MembershipGate,
+    MembershipStore, NodeMembership, NodeRole, VotingGate,
 };
 use crate::replication::{
     can_vote, execute_catch_up, recover_divergence, CatchUpPlan, CatchUpStrategy, DivergenceReport,
@@ -12,6 +12,7 @@ use crate::snapshot::{InMemorySnapshotStore, SnapshotStore};
 use crate::state_machine::{
     LedgerCommand, LedgerCommandType, LedgerState, MembershipView, StateMachine,
 };
+use crate::tests::helpers::make_signed_qc;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,16 +59,15 @@ fn dummy_cmd(sequence: u64) -> LedgerCommand {
 }
 
 fn make_snapshot(sequence: u64, state: &LedgerState) -> CertifiedSnapshot {
-    let qc = QuorumCertificate::single_node(
+    let (qc, _pk_hex) = make_signed_qc(
         "cluster-1",
         1,
         0,
         sequence,
         "cmd-hash",
         "prev-root",
-        crate::state_root::compute_state_root(state),
+        &crate::state_root::compute_state_root(state),
         "node-1",
-        "sig",
     );
     let state_bytes = serde_json::to_vec(state).unwrap();
     let state_root = crate::state_root::compute_state_root(state);
@@ -749,10 +749,7 @@ impl crate::replication::SyncManager for TestSyncManager {
         Ok(())
     }
 
-    async fn request_snapshot(
-        &self,
-        _sequence: u64,
-    ) -> Result<CertifiedSnapshot, LedgerError> {
+    async fn request_snapshot(&self, _sequence: u64) -> Result<CertifiedSnapshot, LedgerError> {
         Err(LedgerError::SnapshotNotFound(_sequence))
     }
 
