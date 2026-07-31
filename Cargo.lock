@@ -1013,7 +1013,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1048,7 +1047,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sled",
  "tempfile",
  "tokio",
  "tracing",
