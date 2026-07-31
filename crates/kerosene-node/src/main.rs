@@ -13,6 +13,7 @@ use kerosene_discovery::{
     TorHandshakeClient,
 };
 use kerosene_identity_core::NodeIdentity;
+use kerosene_ledger::SledLedgerDb;
 use kerosene_membership::MembershipVerifier;
 use kerosene_node::{now_epoch_ms, NodeService};
 use kerosene_sync::LifecycleStore;
@@ -41,6 +42,7 @@ struct Config {
     challenge_ttl_ms: u64,
     peer_live_window_ms: u64,
     discovery_interval_ms: u64,
+    ledger_db_path: PathBuf,
 }
 
 impl Config {
@@ -95,6 +97,7 @@ impl Config {
             challenge_ttl_ms: integer("KEROSENE_CHALLENGE_TTL_MS", 30_000)?,
             peer_live_window_ms: integer("KEROSENE_PEER_LIVE_WINDOW_MS", 90_000)?,
             discovery_interval_ms: integer("KEROSENE_DISCOVERY_INTERVAL_MS", 15_000)?,
+            ledger_db_path: path("KEROSENE_LEDGER_DB_PATH", "ledger-data"),
         })
     }
 }
@@ -107,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "kerosene_node=info".into()),
         )
         .init();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let config = Config::from_env()?;
     let bundle: GenesisTrustBundleV1 = serde_json::from_slice(
         &fs::read(&config.genesis_bundle).context("read GenesisTrustBundle")?,
@@ -115,6 +119,14 @@ async fn main() -> anyhow::Result<()> {
     if bundle.network_id != config.network_id {
         return Err(anyhow!("GenesisTrustBundle network mismatch"));
     }
+
+    // Initialize persistent ledger database
+    info!(
+        path = %config.ledger_db_path.display(),
+        "initializing persistent ledger database"
+    );
+    let _ledger_db = SledLedgerDb::open(&config.ledger_db_path)
+        .map_err(|e| anyhow!("failed to open ledger database: {}", e))?;
 
     let peer_store = Arc::new(PersistentPeerStore::open(&config.peer_store)?);
     let membership = MembershipVerifier::restore(&bundle, config.plane, peer_store.manifests()?)?;
@@ -134,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
         config.peer_live_window_ms,
     )
     .map_err(|error| anyhow!(error))?;
+
+    info!(
+        "ledger stores initialized: nonce, accounts, reservations, idempotency, utxos, withdrawals, snapshots, membership"
+    );
 
     let discovery_configured = !config.genesis_endpoints.is_empty()
         || !config.mirrors.is_empty()

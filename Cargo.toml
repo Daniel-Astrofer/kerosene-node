@@ -6,6 +6,7 @@ members = [
   "crates/kerosene-sync",
   "crates/kerosene-node",
   "crates/kerosene-rsctl",
+  "crates/kerosene-ledger",
 ]
 exclude = ["fuzz"]
 resolver = "2"
@@ -22,7 +23,7 @@ async-trait = "0.1"
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 clap = { version = "4", features = ["derive"] }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "digest", "pkcs8"] }
 hex = "0.4"
 kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/kerosene-contracts.git", rev = "f1f85c0996a6a24965f67eec52d649e5daa15f15" }
 parking_lot = "0.12"
@@ -31,6 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rustls = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sled = "0.34"
 toml = "0.8"
 sha2 = "0.10"
 tempfile = "3"
