@@ -120,7 +120,15 @@ async fn test_unbalanced_entry_rejected() {
             amount_sats: 500, // 500 != 1000
         }],
         timestamp_bucket: 0,
-        entry_hash: JournalEntry::compute_entry_hash("unbalanced-test", 0, "unbalanced", &[], &[], 0, None),
+        entry_hash: JournalEntry::compute_entry_hash(
+            "unbalanced-test",
+            0,
+            "unbalanced",
+            &[],
+            &[],
+            0,
+            None,
+        ),
         previous_entry_hash: None,
     };
     let err = ledger.post_entry(entry).await.unwrap_err();
@@ -259,8 +267,15 @@ async fn test_hash_chain_verifiable() {
     let r1 = ledger.post_entry(e1.clone()).await.unwrap();
 
     // Verify entry hashes are correct
-    let expected_hash_0 =
-        JournalEntry::compute_entry_hash("entry-0", 0, "genesis deposit", &e0.debits, &e0.credits, 1000, None);
+    let expected_hash_0 = JournalEntry::compute_entry_hash(
+        "entry-0",
+        0,
+        "genesis deposit",
+        &e0.debits,
+        &e0.credits,
+        1000,
+        None,
+    );
     assert_eq!(r0.entry_hash, expected_hash_0);
 
     let expected_hash_1 = JournalEntry::compute_entry_hash(
